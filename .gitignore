@@ -1,6 +1,5 @@
 FOFA_自动分拣结果
-.gitignore
+config.json
 指纹.txt
 资产.txt
 资产附件.txt
-config.txt
