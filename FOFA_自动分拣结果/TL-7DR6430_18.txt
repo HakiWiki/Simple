@@ -1,0 +1,24 @@
+
+========================================
+[+] 使用指纹: title=""
+[-] 实际执行: title="TL-7DR6430"
+[-] 共查到 18 个结果
+========================================
+http://116.211.150.5:15000
+http://ldap2.hdut.com:15000
+http://jmq.hdut.com:15000
+http://smtpmail.hdut.com:15000
+http://fnrvddxg.hdut.com:15000
+http://002.hdut.com:15000
+http://soccer.hdut.com:15000
+http://qqunwoyhuztlj.hdut.com:15000
+http://quibnwww.clyy.kxd.hdut.com:15000
+http://tnjllbowoedev.vn.hdut.com:15000
+http://mcxkvqv0xo.hdut.com:15000
+http://uat.hdut.com:15000
+http://s1.hdut.com:15000
+https://115.230.166.242:10022
+https://183.141.201.4:10022
+http://116.211.150.147:15000
+http://49.245.104.8
+http://106.37.149.208:5001

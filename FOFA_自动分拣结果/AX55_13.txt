@@ -1,0 +1,19 @@
+
+========================================
+[+] 使用指纹: title=""
+[-] 实际执行: title="AX55"
+[-] 共查到 13 个结果
+========================================
+http://asus-rt-ax55.smartphone.ua
+https://asus-rt-ax55.smartphone.ua
+http://tp-link-archer-ax55.smartphone.ua
+https://tp-link-archer-ax55.smartphone.ua
+https://ax-55.com
+http://ax-55.com
+https://ax55.win
+http://ax55.win
+https://187.212.120.225:8443
+https://175.136.162.148:8443
+https://189.238.146.8:8443
+https://78.155.164.170:8443
+https://103.232.103.68:8443

@@ -12,6 +12,7 @@ import re
 import csv
 import subprocess
 import base64
+import ipaddress
 
 # 引入 requests 库，并强行关闭 SSL 不安全警告
 import requests
@@ -47,6 +48,35 @@ HEADERS = {
     'Accept': 'application/json, text/javascript, */*; q=0.01'
 }
 
+# ========================== 千禧年怀旧 (Y2K / Win98-2000) 视觉主题常量 ==========================
+Y2K_BG = "#D4D0C8"           # 经典 Win2000/98 3D 银灰底色
+Y2K_FACE = "#C0C0C0"         # 经典控件表面标准灰
+Y2K_LIGHT = "#FFFFFF"        # 高光白边
+Y2K_DARK = "#808080"         # 阴影深灰
+Y2K_NAVY = "#000080"         # 千禧经典深海蓝 (标题栏/高亮选中)
+Y2K_TEAL = "#008080"         # 经典 Win98 桌面青色
+Y2K_BLUE_BTN = "#104E8B"     # 复古深蓝按钮
+Y2K_GREEN = "#008000"        # 复古DOS/Win98 纯正绿
+Y2K_CRT_BG = "#000000"       # CRT 终端纯黑背景
+Y2K_CRT_FG = "#00FF00"       # CRT 荧光绿字符
+Y2K_MAROON = "#800000"       # 复古深红警示色
+Y2K_OLIVE = "#808000"        # 复古橄榄黄/琥珀色
+Y2K_PURPLE = "#4B0082"       # 千禧靛紫
+Y2K_CREAM = "#FFFBF0"        # 复古暖白输入底色
+Y2K_ROW_EVEN = "#ECE9D8"     # 经典隔行浅米灰
+Y2K_FONT = ("SimSun", 9)
+Y2K_FONT_BOLD = ("SimSun", 9, "bold")
+Y2K_FONT_EN = ("Tahoma", 8)
+Y2K_FONT_TERM = ("Courier New", 9)
+
+# 适配整体 Y2K 色调的呼吸光效渐变序列 (深海蓝 <-> 桌面青 <-> 荧光青)
+BREATH_COLORS = [
+    "#002080", "#003888", "#005090", "#006898", "#008080",
+    "#009898", "#00B0B0", "#00C8C8", "#00E0E0", "#00FFFF",
+    "#00E0E0", "#00C8C8", "#00B0B0", "#009898", "#008080",
+    "#006898", "#005090", "#003888"
+]
+
 def load_global_config():
     if os.path.exists(CONFIG_FILE):
         try:
@@ -64,6 +94,7 @@ class LinkOpenerApp:
     def __init__(self, root, config_data):
         self.root = root
         self.root.title("simple")
+        self.root.configure(bg=Y2K_BG)
         
         self.root.geometry("1350x850")
         self.root.minsize(1300, 800)
@@ -75,27 +106,79 @@ class LinkOpenerApp:
         self.stop_scan = False
         self.is_animating = False
         self.stop_fofa_batch_flag = False
+        self.breath_idx = 0
+        self.is_breathing = False
+        self.only_ip_mode = False  # 「仅保留IP」按钮按下状态标记
 
         self.style = ttk.Style()
         if 'clam' in self.style.theme_names():
             self.style.theme_use('clam')
             
-        self.style.configure("TNotebook", background="#F5F5F7", borderwidth=0)
-        self.style.configure("TNotebook.Tab", font=('Microsoft YaHei', 9), padding=[15, 5])
-        self.style.map("TNotebook.Tab", background=[("selected", "#007AFF")], foreground=[("selected", "white")])
-        self.style.configure("Treeview", rowheight=30, font=('Microsoft YaHei', 9), borderwidth=0)
-        self.style.configure("Treeview.Heading", font=('Microsoft YaHei', 9, 'bold'), background="#F2F2F7")
-        self.style.map('Treeview', background=[('selected', '#007AFF')], foreground=[('selected', 'white')])
+        # 千禧年经典 3D 凹凸质感样式配置
+        self.style.configure("TNotebook", background=Y2K_BG, borderwidth=2, relief="raised", lightcolor=Y2K_LIGHT, darkcolor=Y2K_DARK)
+        self.style.configure("TNotebook.Tab", font=Y2K_FONT_BOLD, padding=[14, 4], background=Y2K_FACE, foreground="#000000", borderwidth=2, lightcolor=Y2K_LIGHT, darkcolor=Y2K_DARK)
+        self.style.map("TNotebook.Tab",
+                       background=[("selected", Y2K_NAVY), ("active", "#DFDFDF")],
+                       foreground=[("selected", "#FFFF00"), ("active", Y2K_NAVY)])
+        
+        self.style.configure("Treeview",
+                             rowheight=26,
+                             font=Y2K_FONT,
+                             background="#FFFFFF",
+                             fieldbackground="#FFFFFF",
+                             foreground="#000000",
+                             borderwidth=2,
+                             relief="sunken")
+        self.style.configure("Treeview.Heading",
+                             font=Y2K_FONT_BOLD,
+                             background=Y2K_FACE,
+                             foreground="#000000",
+                             relief="raised",
+                             borderwidth=2,
+                             lightcolor=Y2K_LIGHT,
+                             darkcolor=Y2K_DARK)
+        self.style.map("Treeview.Heading",
+                       background=[("active", "#DFDFDF")],
+                       relief=[("pressed", "sunken")])
+        self.style.map('Treeview',
+                       background=[('selected', Y2K_NAVY)],
+                       foreground=[('selected', '#FFFF00')])
+        
+        self.style.configure("TPanedwindow", background=Y2K_BG)
+        self.style.configure("Vertical.TScrollbar",
+                             background=Y2K_FACE,
+                             troughcolor=Y2K_BG,
+                             bordercolor=Y2K_DARK,
+                             lightcolor=Y2K_LIGHT,
+                             darkcolor=Y2K_DARK,
+                             arrowcolor="#000000")
+
+        # 顶部千禧年复古深蓝横幅装饰栏
+        banner_frame = tk.Frame(self.root, bg=Y2K_NAVY, bd=2, relief=tk.RAISED)
+        banner_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(6, 0))
+        tk.Label(banner_frame,
+                 text=" ◆ SIMPLE // MILLENNIUM EDITION [Y2K RETRO WORKSTATION] ",
+                 bg=Y2K_NAVY,
+                 fg="#FFFF00",
+                 font=("Tahoma", 9, "bold"),
+                 anchor="w",
+                 pady=2).pack(side=tk.LEFT, padx=4)
+        tk.Label(banner_frame,
+                 text="SYS.VER 2000.10 // READY ",
+                 bg=Y2K_NAVY,
+                 fg="#00FFFF",
+                 font=("Courier New", 8, "bold"),
+                 anchor="e").pack(side=tk.RIGHT, padx=6)
 
         self.setup_status_bar()
 
         self.paned = ttk.PanedWindow(root, orient=tk.VERTICAL)
-        self.paned.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+        self.paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
 
-        self.top_frame = tk.Frame(self.paned, bg="white", highlightthickness=1, highlightbackground="#D1D1D6")
+        self.top_frame = tk.Frame(self.paned, bg=Y2K_BG, bd=2, relief=tk.SUNKEN)
         self.paned.add(self.top_frame, weight=3)
 
-        self.bottom_frame = tk.Frame(self.paned, bg="#F5F5F7")
+        self.bottom_frame = tk.Frame(self.paned, bg=Y2K_BG, bd=2, relief=tk.GROOVE)
         self.paned.add(self.bottom_frame, weight=2)
 
         self.setup_table_area()
@@ -116,7 +199,7 @@ class LinkOpenerApp:
                 self.root.attributes('-zoomed', True)
             self.root.resizable(False, False)
             self.is_zoomed = True
-            self.btn_window_mode.config(text="切换为缩小模式", bg="#FF9500")
+            self.btn_window_mode.config(text="切换为缩小模式", bg=Y2K_OLIVE, fg="#FFFF00")
         else:
             self.root.resizable(True, True)
             if os.name == 'nt':
@@ -126,7 +209,7 @@ class LinkOpenerApp:
             self.root.geometry("1350x850")
             self.root.resizable(False, False)
             self.is_zoomed = False
-            self.btn_window_mode.config(text="切换为全屏模式", bg="#007AFF")
+            self.btn_window_mode.config(text="切换为全屏模式", bg=Y2K_NAVY, fg="#FFFFFF")
 
     def enable_drag_drop(self, widget, expected_type):
         if HAS_DND:
@@ -174,7 +257,7 @@ class LinkOpenerApp:
 
     def import_data_to_table_smart(self, path):
         try:
-            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
                 content = f.read().strip()
             if not content:
                 self.log(f"文件 {os.path.basename(path)} 为空！")
@@ -208,7 +291,7 @@ class LinkOpenerApp:
                     
                     i = start_idx + count
                     tag = 'evenrow' if i % 2 == 0 else 'oddrow'
-                    self.tree.insert("", "end", values=("☐", i, country, icp, title, url, "-", status, product), tags=(tag,))
+                    self.tree.insert("", 0, values=("☐", i, country, icp, title, url, "-", status, product), tags=(tag,))
                     count += 1
             else:
                 self.log("未检测到表头，启用AI正则模糊提取模式")
@@ -239,11 +322,12 @@ class LinkOpenerApp:
                             
                     i = start_idx + count
                     tag = 'evenrow' if i % 2 == 0 else 'oddrow'
-                    self.tree.insert("", "end", values=("☐", i, "-", "-", title, url, "-", status, "-"), tags=(tag,))
+                    self.tree.insert("", 0, values=("☐", i, "-", "-", title, url, "-", status, "-"), tags=(tag,))
                     count += 1
                     
+            self.tree.yview_moveto(0)
             self.update_range_end()
-            self.log(f"智能解析完毕！成功将 {count} 条资产解剖并对号入座填入表格！")
+            self.log(f"智能解析完毕！成功将 {count} 条资产解剖并对号入座填入表格顶部！")
             if count > 0 and HAS_WINSOUND: winsound.MessageBeep(winsound.MB_OK)
                 
         except Exception as e:
@@ -251,14 +335,17 @@ class LinkOpenerApp:
             messagebox.showerror("解析错误", f"无法识别该文件的数据结构：\n{e}")
 
     def setup_status_bar(self):
-        status_frame = tk.Frame(self.root, bg="#F5F5F7")
-        status_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=15, pady=5)
-        self.lbl_info = tk.Label(status_frame, text="RAM: -% | CPU: -%", bg="#F5F5F7", font=("Arial", 8), fg="#8E8E93")
-        self.lbl_info.pack(side=tk.LEFT)
-        self.lbl_ready = tk.Label(status_frame, text="直接可用", bg="#F5F5F7", font=("Microsoft YaHei", 8), fg="#34C759")
-        self.lbl_ready.pack(side=tk.RIGHT, padx=20)
-        self.lbl_count = tk.Label(status_frame, text="资产总计: 0  |  已勾选: 0", bg="#F5F5F7", font=("Microsoft YaHei", 9, "bold"), fg="#007AFF")
-        self.lbl_count.pack(side=tk.RIGHT)
+        status_frame = tk.Frame(self.root, bg=Y2K_BG, bd=1, relief=tk.RAISED)
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 6))
+        
+        self.lbl_info = tk.Label(status_frame, text="RAM: -% | CPU: -%", bg=Y2K_BG, font=Y2K_FONT_EN, fg="#000000", bd=1, relief=tk.SUNKEN, padx=8, pady=2)
+        self.lbl_info.pack(side=tk.LEFT, padx=2, pady=2)
+        
+        self.lbl_ready = tk.Label(status_frame, text="● 直接可用", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_GREEN, bd=1, relief=tk.SUNKEN, padx=10, pady=2)
+        self.lbl_ready.pack(side=tk.RIGHT, padx=2, pady=2)
+        
+        self.lbl_count = tk.Label(status_frame, text="资产总计: 0  |  已勾选: 0", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_NAVY, bd=1, relief=tk.SUNKEN, padx=12, pady=2)
+        self.lbl_count.pack(side=tk.RIGHT, padx=4, pady=2)
 
     def update_sys_info(self):
         try:
@@ -278,7 +365,7 @@ class LinkOpenerApp:
         scroll_y = ttk.Scrollbar(self.top_frame)
         scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
         columns = ("check", "id", "country", "icp", "title", "url", "length", "status", "product")
-        self.tree = ttk.Treeview(self.top_frame, columns=columns, show="headings", yscrollcommand=scroll_y.set)
+        self.tree = ttk.Treeview(self.top_frame, columns=columns, show="headings", selectmode="extended", yscrollcommand=scroll_y.set)
         scroll_y.config(command=self.tree.yview)
         
         self.all_checked = False
@@ -302,17 +389,28 @@ class LinkOpenerApp:
             self.tree.column(col, width=width, anchor=tk.CENTER if col in ("check","id","status") else tk.W)
             
         self.tree.pack(fill=tk.BOTH, expand=True)
-        self.tree.tag_configure('oddrow', background='#FFFFFF')
-        self.tree.tag_configure('evenrow', background='#F9F9FB')
-        self.tree.tag_configure('alive', foreground='#34C759', font=('Microsoft YaHei', 9, 'bold'))
-        self.tree.tag_configure('dead', foreground='#FF3B30')
+        self.tree.tag_configure('oddrow', background='#FFFFFF', foreground='#000000')
+        self.tree.tag_configure('evenrow', background=Y2K_ROW_EVEN, foreground='#000000')
+        self.tree.tag_configure('alive', foreground=Y2K_GREEN, font=Y2K_FONT_BOLD)
+        self.tree.tag_configure('dead', foreground=Y2K_MAROON)
         
-        self.tree.bind('<ButtonRelease-1>', self.toggle_checkbox)
+        # 绑定左键释放与键盘 Shift 上下键选区改变：实现按住 Shift/Ctrl 多选自动勾选
+        self.tree.bind('<ButtonRelease-1>', self.on_tree_click_release)
+        self.tree.bind('<KeyRelease-Up>', self.on_key_select_check)
+        self.tree.bind('<KeyRelease-Down>', self.on_key_select_check)
         self.tree.bind('<Double-1>', lambda e: self.open_selected_links())
+
+        # 创建「6.资产链接」列专属四边颜色呼吸框（默认隐藏，仅在删除非IP资产期间激活显示）
+        self.breath_top = tk.Canvas(self.tree, highlightthickness=0, bd=0, height=3, bg=BREATH_COLORS[0])
+        self.breath_bottom = tk.Canvas(self.tree, highlightthickness=0, bd=0, height=3, bg=BREATH_COLORS[0])
+        self.breath_left = tk.Canvas(self.tree, highlightthickness=0, bd=0, width=3, bg=BREATH_COLORS[0])
+        self.breath_right = tk.Canvas(self.tree, highlightthickness=0, bd=0, width=3, bg=BREATH_COLORS[0])
+        self.tree.bind('<Configure>', lambda e: self.update_breath_box_geometry() if self.is_breathing else None)
+        self.tree.bind('<Motion>', lambda e: self.update_breath_box_geometry() if (self.is_breathing and (e.state & 0x0100)) else None)
 
         self.enable_drag_drop(self.tree, 'table')
 
-        self.menu = tk.Menu(self.root, tearoff=0, font=("Microsoft YaHei", 9))
+        self.menu = tk.Menu(self.root, tearoff=0, font=Y2K_FONT, bg=Y2K_FACE, fg="#000000", activebackground=Y2K_NAVY, activeforeground="#FFFF00", bd=2, relief=tk.RAISED)
         self.menu.add_command(label="浏览器打开选中", command=self.open_selected_links)
         self.menu.add_separator()
         self.menu.add_command(label="复制 URL", command=lambda: self.copy_to_clip(5))
@@ -320,6 +418,47 @@ class LinkOpenerApp:
         self.menu.add_separator()
         self.menu.add_command(label="动态删除选中资产", command=self.delete_highlighted_rows)
         self.tree.bind("<Button-3>", self.show_context_menu)
+
+    def update_breath_box_geometry(self):
+        if not self.is_breathing:
+            return
+        try:
+            cols = ("check", "id", "country", "icp", "title")
+            x_offset = sum(self.tree.column(c, "width") for c in cols)
+            col_w = self.tree.column("url", "width")
+            tree_h = self.tree.winfo_height()
+            if tree_h <= 10 or col_w <= 6:
+                return
+            t = 3  # 呼吸框线条粗细
+            self.breath_top.place(x=x_offset, y=0, width=col_w, height=t)
+            self.breath_bottom.place(x=x_offset, y=tree_h - t, width=col_w, height=t)
+            self.breath_left.place(x=x_offset, y=0, width=t, height=tree_h)
+            self.breath_right.place(x=x_offset + col_w - t, y=0, width=t, height=tree_h)
+        except Exception:
+            pass
+
+    def start_url_column_breathing(self):
+        self.is_breathing = True
+        self.breath_idx = 0
+        self.animate_url_column_breathing()
+
+    def stop_url_column_breathing(self):
+        self.is_breathing = False
+        for w in (self.breath_top, self.breath_bottom, self.breath_left, self.breath_right):
+            w.place_forget()
+
+    def animate_url_column_breathing(self):
+        if not self.is_breathing:
+            return
+        try:
+            color = BREATH_COLORS[self.breath_idx % len(BREATH_COLORS)]
+            self.breath_idx += 1
+            for w in (self.breath_top, self.breath_bottom, self.breath_left, self.breath_right):
+                w.config(bg=color)
+            self.update_breath_box_geometry()
+        except Exception:
+            pass
+        self.root.after(60, self.animate_url_column_breathing)
 
     def sort_column(self, col):
         if col == "check":
@@ -342,7 +481,8 @@ class LinkOpenerApp:
         self.sort_states[col] = next_state
         if next_state == 0:
             sort_col = 'id'
-            reverse = False
+            # 默认恢复为：最新发现的资产(最大ID)在最上面，最早的(最小ID)在最下面
+            reverse = True
             self.tree.heading(col, text=self.headings_text[col])
         else:
             sort_col = col
@@ -491,34 +631,47 @@ class LinkOpenerApp:
             self.log("目标列没有可提取的有效数据。")
 
     def setup_bottom_area(self):
-        btn_frame = tk.Frame(self.bottom_frame, bg="#F5F5F7")
-        btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=15, pady=10)
+        btn_frame = tk.Frame(self.bottom_frame, bg=Y2K_BG, bd=2, relief=tk.GROOVE)
+        btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=8)
         
-        # 居中对齐按钮样式
-        btn_opt = {"font": ("Microsoft YaHei", 9, "bold"), "width": 16, "bd": 0, "pady": 6, "anchor": "center"}
+        # 千禧年经典 3D 凸起按钮样式
+        btn_opt = {"font": Y2K_FONT_BOLD, "width": 16, "bd": 2, "relief": tk.RAISED, "pady": 5, "anchor": "center", "cursor": "hand2"}
         
-        top_btn_group = tk.Frame(btn_frame, bg="#F5F5F7")
-        top_btn_group.pack(side=tk.TOP, fill=tk.X)
+        top_btn_group = tk.Frame(btn_frame, bg=Y2K_BG)
+        top_btn_group.pack(side=tk.TOP, fill=tk.X, padx=6, pady=6)
         
-        self.btn_window_mode = tk.Button(top_btn_group, text="切换为全屏模式", bg="#007AFF", fg="white", **btn_opt, command=self.toggle_window_mode)
-        self.btn_window_mode.pack(pady=(0, 10))
+        self.btn_window_mode = tk.Button(top_btn_group, text="切换为全屏模式", bg=Y2K_NAVY, fg="#FFFFFF", activebackground=Y2K_TEAL, activeforeground="#FFFF00", **btn_opt, command=self.toggle_window_mode)
+        self.btn_window_mode.pack(pady=(0, 8))
         
-        tk.Button(top_btn_group, text="保存全局配置", bg="#34C759", fg="white", **btn_opt, command=self.save_app_config).pack(pady=5)
-        tk.Button(top_btn_group, text="动态清空表格", bg="#8E8E93", fg="white", **btn_opt, command=self.clear_table).pack(pady=5)
-        tk.Button(top_btn_group, text="动态删除勾选行", bg="#FF3B30", fg="white", **btn_opt, command=self.delete_checked_rows).pack(pady=5)
+        tk.Button(top_btn_group, text="保存全局配置", bg=Y2K_GREEN, fg="#FFFFFF", activebackground="#006400", activeforeground="#FFFF00", **btn_opt, command=self.save_app_config).pack(pady=4)
+        tk.Button(top_btn_group, text="动态清空表格", bg=Y2K_FACE, fg="#000000", activebackground="#DFDFDF", **btn_opt, command=self.clear_table).pack(pady=4)
+        tk.Button(top_btn_group, text="动态删除勾选行", bg=Y2K_MAROON, fg="#FFFFFF", activebackground="#A52A2A", activeforeground="#FFFF00", **btn_opt, command=self.delete_checked_rows).pack(pady=4)
+        
+        # 可按动切换状态（按下/未按下）的「仅保留IP」按钮
+        self.btn_only_ip = tk.Button(
+            top_btn_group,
+            text="仅保留IP [关]",
+            bg=Y2K_FACE,
+            fg="#000000",
+            activebackground=Y2K_TEAL,
+            activeforeground="#FFFF00",
+            **btn_opt,
+            command=self.toggle_only_ip_mode
+        )
+        self.btn_only_ip.pack(pady=4)
 
-        self.btn_bp = tk.Button(btn_frame, text="BP 启动\n(右键重设路径)", bg="#5856D6", fg="white", font=("Microsoft YaHei", 11, "bold"), width=13, height=3, bd=0, command=self.start_bp, justify=tk.CENTER)
-        self.btn_bp.pack(side=tk.BOTTOM, pady=10)
+        self.btn_bp = tk.Button(btn_frame, text="BP 启动\n(右键重设路径)", bg=Y2K_PURPLE, fg="#FFFF00", activebackground=Y2K_NAVY, activeforeground="#FFFFFF", font=("SimSun", 10, "bold"), width=14, height=3, bd=3, relief=tk.RAISED, command=self.start_bp, justify=tk.CENTER, cursor="hand2")
+        self.btn_bp.pack(side=tk.BOTTOM, padx=6, pady=10)
         self.btn_bp.bind("<Button-3>", self.reconfigure_bp)
 
-        nb_frame = tk.Frame(self.bottom_frame, bg="#F5F5F7")
-        nb_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        nb_frame = tk.Frame(self.bottom_frame, bg=Y2K_BG)
+        nb_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 4), pady=8)
         self.notebook = ttk.Notebook(nb_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
-        self.tab_fofa = tk.Frame(self.notebook, bg="white")
-        self.tab_check = tk.Frame(self.notebook, bg="white")
-        self.tab_text_dedup = tk.Frame(self.notebook, bg="white")
+        self.tab_fofa = tk.Frame(self.notebook, bg=Y2K_BG, bd=2, relief=tk.RAISED)
+        self.tab_check = tk.Frame(self.notebook, bg=Y2K_BG, bd=2, relief=tk.RAISED)
+        self.tab_text_dedup = tk.Frame(self.notebook, bg=Y2K_BG, bd=2, relief=tk.RAISED)
         
         self.notebook.add(self.tab_fofa, text=" 1. FOFA 采集 ")
         self.notebook.add(self.tab_check, text=" 2. 资产管理与测活 ")
@@ -528,63 +681,89 @@ class LinkOpenerApp:
         self.setup_check_tab()
         self.setup_text_dedup_tab()
 
-        log_frame = tk.LabelFrame(self.bottom_frame, text="实战日志", bg="#F5F5F7", font=("Microsoft YaHei", 9, "bold"))
-        log_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
-        self.text_log = tk.Text(log_frame, bg="white", fg="#1C1C1E", font=("Courier New", 9), bd=0)
+        log_frame = tk.LabelFrame(self.bottom_frame, text=" 实战日志 [CRT-TERMINAL] ", bg=Y2K_BG, fg=Y2K_NAVY, bd=2, relief=tk.GROOVE, font=Y2K_FONT_BOLD)
+        log_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=8)
+        self.text_log = tk.Text(log_frame, bg=Y2K_CRT_BG, fg=Y2K_CRT_FG, insertbackground=Y2K_CRT_FG, selectbackground=Y2K_GREEN, selectforeground="#FFFFFF", font=Y2K_FONT_TERM, bd=2, relief=tk.SUNKEN)
         self.text_log.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.log("系统核心加载完毕，软件已直接进入可用状态...")
 
+    def toggle_only_ip_mode(self):
+        self.only_ip_mode = not self.only_ip_mode
+        if self.only_ip_mode:
+            # 按下状态：3D 凹陷锁定 (SUNKEN) + 复古青底亮黄字
+            self.btn_only_ip.config(
+                text="● 仅保留IP [开]",
+                bg=Y2K_TEAL,
+                fg="#FFFF00",
+                relief=tk.SUNKEN,
+                bd=3
+            )
+            self.log("已按下【仅保留IP】按钮：单条语法查询与批量指纹查询完成后将自动动态删除非IP资产。")
+            # 如果当前表格中已经有资产，按下时也顺便执行一次清洗
+            if self.tree.get_children() and not self.is_animating:
+                self.keep_only_ip_rows()
+        else:
+            # 未按下状态：3D 凸起弹回 (RAISED) + 经典标准灰底黑字
+            self.btn_only_ip.config(
+                text="仅保留IP [关]",
+                bg=Y2K_FACE,
+                fg="#000000",
+                relief=tk.RAISED,
+                bd=2
+            )
+            self.log("已弹起关闭【仅保留IP】过滤模式。")
+
     def setup_text_dedup_tab(self):
-        t = tk.Frame(self.tab_text_dedup, bg="white", padx=15, pady=15)
+        t = tk.Frame(self.tab_text_dedup, bg=Y2K_BG, padx=12, pady=12)
         t.pack(fill=tk.BOTH, expand=True)
         
-        f_main = tk.Frame(t, bg="white")
-        f_main.pack(fill=tk.X, pady=5)
-        tk.Label(f_main, text="主文本完全路径:", bg="#F2F2F7", font=("Microsoft YaHei", 9, "bold"), width=16, anchor="e").pack(side=tk.LEFT, ipady=3, padx=(0, 5))
-        self.entry_dedup_main = tk.Entry(f_main, bg="#F2F2F7", bd=0)
+        f_main = tk.Frame(t, bg=Y2K_BG)
+        f_main.pack(fill=tk.X, pady=4)
+        tk.Label(f_main, text="主文本完全路径:", bg=Y2K_FACE, fg="#000000", bd=1, relief=tk.GROOVE, font=Y2K_FONT_BOLD, width=16, anchor="e").pack(side=tk.LEFT, ipady=2, padx=(0, 5))
+        self.entry_dedup_main = tk.Entry(f_main, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_dedup_main.insert(0, self.config_data.get("dedup_main_txt", ""))
-        self.entry_dedup_main.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
-        tk.Button(f_main, text="浏览", bg="#E5E5EA", bd=0, padx=10, command=lambda: self.browse_txt_for_entry(self.entry_dedup_main, "dedup_main_txt")).pack(side=tk.LEFT, padx=(5, 0))
-        tk.Button(f_main, text="主文本自去重 覆盖更新", bg="#E5E5EA", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=10, command=lambda: self.self_dedup_file(self.entry_dedup_main)).pack(side=tk.LEFT, padx=(5, 0))
+        self.entry_dedup_main.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        tk.Button(f_main, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=lambda: self.browse_txt_for_entry(self.entry_dedup_main, "dedup_main_txt")).pack(side=tk.LEFT, padx=(5, 0))
+        tk.Button(f_main, text="主文本自去重 覆盖更新", bg=Y2K_FACE, fg=Y2K_NAVY, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=10, command=lambda: self.self_dedup_file(self.entry_dedup_main)).pack(side=tk.LEFT, padx=(5, 0))
         self.enable_drag_drop(self.entry_dedup_main, 'txt')
 
-        f_sub = tk.Frame(t, bg="white")
-        f_sub.pack(fill=tk.X, pady=5)
-        tk.Label(f_sub, text="副文本完全路径:", bg="#F2F2F7", font=("Microsoft YaHei", 9, "bold"), width=16, anchor="e").pack(side=tk.LEFT, ipady=3, padx=(0, 5))
-        self.entry_dedup_sub = tk.Entry(f_sub, bg="#F2F2F7", bd=0)
+        f_sub = tk.Frame(t, bg=Y2K_BG)
+        f_sub.pack(fill=tk.X, pady=4)
+        tk.Label(f_sub, text="副文本完全路径:", bg=Y2K_FACE, fg="#000000", bd=1, relief=tk.GROOVE, font=Y2K_FONT_BOLD, width=16, anchor="e").pack(side=tk.LEFT, ipady=2, padx=(0, 5))
+        self.entry_dedup_sub = tk.Entry(f_sub, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_dedup_sub.insert(0, self.config_data.get("dedup_sub_txt", ""))
-        self.entry_dedup_sub.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
-        tk.Button(f_sub, text="浏览", bg="#E5E5EA", bd=0, padx=10, command=lambda: self.browse_txt_for_entry(self.entry_dedup_sub, "dedup_sub_txt")).pack(side=tk.LEFT, padx=(5, 0))
-        tk.Button(f_sub, text="副文本自去重 覆盖更新", bg="#E5E5EA", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=10, command=lambda: self.self_dedup_file(self.entry_dedup_sub)).pack(side=tk.LEFT, padx=(5, 0))
+        self.entry_dedup_sub.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        tk.Button(f_sub, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=lambda: self.browse_txt_for_entry(self.entry_dedup_sub, "dedup_sub_txt")).pack(side=tk.LEFT, padx=(5, 0))
+        tk.Button(f_sub, text="副文本自去重 覆盖更新", bg=Y2K_FACE, fg=Y2K_NAVY, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=10, command=lambda: self.self_dedup_file(self.entry_dedup_sub)).pack(side=tk.LEFT, padx=(5, 0))
         self.enable_drag_drop(self.entry_dedup_sub, 'txt')
 
-        f_cross = tk.Frame(t, bg="white")
-        f_cross.pack(fill=tk.X, pady=15)
+        f_cross = tk.Frame(t, bg=Y2K_BG)
+        f_cross.pack(fill=tk.X, pady=12)
         
         btn_cross = tk.Button(f_cross, text="文本去重 主文本更新累加保存 > 提取未重复新内容 > 显示至列表及覆盖至副文本", 
-                              bg="#E1F5FE", fg="#0277BD", font=("Microsoft YaHei", 10, "bold"), bd=0, pady=10, command=self.cross_deduplicate)
+                              bg=Y2K_TEAL, fg="#FFFF00", activebackground=Y2K_NAVY, activeforeground="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, pady=8, command=self.cross_deduplicate)
         btn_cross.pack(fill=tk.X)
 
-        ttk.Separator(t, orient='horizontal').pack(fill=tk.X, pady=5)
+        tk.Frame(t, bg=Y2K_DARK, height=2, bd=1, relief=tk.SUNKEN).pack(fill=tk.X, pady=5)
 
-        f_del = tk.Frame(t, bg="white")
-        f_del.pack(fill=tk.X, pady=10)
-        tk.Label(f_del, text="主文本操作内容:", bg="#F2F2F7", font=("Microsoft YaHei", 9, "bold"), width=16, anchor="e").pack(side=tk.LEFT, ipady=3, padx=(0, 5))
-        self.entry_del_target = tk.Entry(f_del, width=20, bg="#FFF0E0", bd=0)
-        self.entry_del_target.pack(side=tk.LEFT, ipady=3, padx=5)
+        f_del = tk.Frame(t, bg=Y2K_BG)
+        f_del.pack(fill=tk.X, pady=8)
+        tk.Label(f_del, text="主文本操作内容:", bg=Y2K_FACE, fg="#000000", bd=1, relief=tk.GROOVE, font=Y2K_FONT_BOLD, width=16, anchor="e").pack(side=tk.LEFT, ipady=2, padx=(0, 5))
+        self.entry_del_target = tk.Entry(f_del, width=20, bg=Y2K_CREAM, fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        self.entry_del_target.pack(side=tk.LEFT, ipady=2, padx=5)
         
-        tk.Button(f_del, text="删除自身及右边", bg="#FF9500", fg="white", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=15, command=self.delete_self_and_right).pack(side=tk.LEFT, padx=5)
-        tk.Label(f_del, text="(输入需要剔除的尾部特征，如 '?' 或 '/'，将直接修改主文本文件)", bg="white", font=("Arial", 8), fg="#8E8E93").pack(side=tk.LEFT, padx=5)
+        tk.Button(f_del, text="删除自身及右边", bg=Y2K_OLIVE, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=15, command=self.delete_self_and_right).pack(side=tk.LEFT, padx=5)
+        tk.Label(f_del, text="(输入需要剔除的尾部特征，如 '?' 或 '/'，将直接修改主文本文件)", bg=Y2K_BG, font=Y2K_FONT, fg="#404040").pack(side=tk.LEFT, padx=5)
 
-        ttk.Separator(t, orient='horizontal').pack(fill=tk.X, pady=10)
+        tk.Frame(t, bg=Y2K_DARK, height=2, bd=1, relief=tk.SUNKEN).pack(fill=tk.X, pady=8)
         
-        f_join = tk.Frame(t, bg="white")
-        f_join.pack(fill=tk.X, pady=5)
-        tk.Label(f_join, text="表格资产提取:", bg="#F2F2F7", font=("Microsoft YaHei", 9, "bold"), width=16, anchor="e").pack(side=tk.LEFT, ipady=3, padx=(0, 5))
+        f_join = tk.Frame(t, bg=Y2K_BG)
+        f_join.pack(fill=tk.X, pady=4)
+        tk.Label(f_join, text="表格资产提取:", bg=Y2K_FACE, fg="#000000", bd=1, relief=tk.GROOVE, font=Y2K_FONT_BOLD, width=16, anchor="e").pack(side=tk.LEFT, ipady=2, padx=(0, 5))
         
-        btn_join = tk.Button(f_join, text="将URL使用英文逗号连接并复制", bg="#5856D6", fg="white", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=15, command=self.join_urls_with_comma)
+        btn_join = tk.Button(f_join, text="将URL使用英文逗号连接并复制", bg=Y2K_NAVY, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=15, command=self.join_urls_with_comma)
         btn_join.pack(side=tk.LEFT, padx=5)
-        tk.Label(f_join, text="(一键提取上方表格中的所有URL，用英文逗号拼接并自动存入剪贴板)", bg="white", font=("Arial", 8), fg="#8E8E93").pack(side=tk.LEFT, padx=5)
+        tk.Label(f_join, text="(一键提取上方表格中的所有URL，用英文逗号拼接并自动存入剪贴板)", bg=Y2K_BG, font=Y2K_FONT, fg="#404040").pack(side=tk.LEFT, padx=5)
 
     def join_urls_with_comma(self):
         urls = []
@@ -619,7 +798,7 @@ class LinkOpenerApp:
             return
             
         try:
-            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
                 lines = f.readlines()
                 
             original_len = len(lines)
@@ -645,9 +824,9 @@ class LinkOpenerApp:
             except: pass
             
         try:
-            with open(main_path, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(main_path, 'r', encoding='utf-8-sig', errors='ignore') as f:
                 main_lines = [l.strip() for l in f.readlines() if l.strip()]
-            with open(sub_path, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(sub_path, 'r', encoding='utf-8-sig', errors='ignore') as f:
                 sub_lines = [l.strip() for l in f.readlines() if l.strip()]
                 
             sub_set = set(sub_lines)
@@ -670,10 +849,11 @@ class LinkOpenerApp:
             for i, url in enumerate(new_unique_lines, start_idx):
                 link = url if url.startswith("http") else "http://" + url
                 tag = 'evenrow' if i % 2 == 0 else 'oddrow'
-                self.tree.insert("", "end", values=("☐", i, "-", "-", "-", link, "-", "待测", "-"), tags=(tag,))
+                self.tree.insert("", 0, values=("☐", i, "-", "-", "-", link, "-", "待测", "-"), tags=(tag,))
+            self.tree.yview_moveto(0)
             self.update_range_end()
             
-            self.log(f"交叉去重完毕！发现 {len(new_unique_lines)} 条新资产，已覆盖保存至副文本，并成功载入表格准备测活！")
+            self.log(f"交叉去重完毕！发现 {len(new_unique_lines)} 条新资产，已覆盖保存至副文本，并成功载入表格顶部准备测活！")
             if HAS_WINSOUND: winsound.MessageBeep(winsound.MB_OK)
         except Exception as e:
             self.log(f"交叉去重失败: {str(e)}")
@@ -690,7 +870,7 @@ class LinkOpenerApp:
             return
             
         try:
-            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
                 lines = f.readlines()
             
             new_lines = []
@@ -713,69 +893,69 @@ class LinkOpenerApp:
             self.log(f"截断处理失败: {str(e)}")
 
     def setup_fofa_tab(self):
-        f = tk.Frame(self.tab_fofa, bg="white", padx=15, pady=15)
+        f = tk.Frame(self.tab_fofa, bg=Y2K_BG, padx=12, pady=10)
         f.pack(fill=tk.BOTH, expand=True)
         
-        lbl_single = tk.Label(f, text="【单条语法查询】", bg="white", font=("Microsoft YaHei", 9, "bold"), fg="#007AFF")
-        lbl_single.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        lbl_single = tk.Label(f, text="【单条语法查询】", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_NAVY)
+        lbl_single.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
-        tk.Label(f, text="FOFA Key:", bg="white").grid(row=1, column=0, sticky="w")
-        self.entry_fofa_key = tk.Entry(f, width=40, bg="#F2F2F7", bd=0)
+        tk.Label(f, text="FOFA Key:", bg=Y2K_BG, font=Y2K_FONT).grid(row=1, column=0, sticky="w")
+        self.entry_fofa_key = tk.Entry(f, width=40, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_fofa_key.insert(0, self.config_data.get("fofa_key",""))
-        self.entry_fofa_key.grid(row=1, column=1, pady=5, padx=5, ipady=3, sticky="w")
+        self.entry_fofa_key.grid(row=1, column=1, pady=4, padx=5, ipady=2, sticky="w")
 
-        tk.Label(f, text="查询语法:", bg="white").grid(row=2, column=0, sticky="w")
-        self.entry_fofa_query = tk.Entry(f, width=40, bg="#F2F2F7", bd=0)
+        tk.Label(f, text="查询语法:", bg=Y2K_BG, font=Y2K_FONT).grid(row=2, column=0, sticky="w")
+        self.entry_fofa_query = tk.Entry(f, width=40, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_fofa_query.insert(0, self.config_data.get("fofa_query",""))
-        self.entry_fofa_query.grid(row=2, column=1, sticky="w", pady=5, padx=5, ipady=3)
+        self.entry_fofa_query.grid(row=2, column=1, sticky="w", pady=4, padx=5, ipady=2)
 
-        tk.Label(f, text="获取数量:", bg="white").grid(row=2, column=2, sticky="e", padx=5)
-        self.entry_fofa_size = tk.Entry(f, width=8, bg="#F2F2F7", bd=0)
+        tk.Label(f, text="获取数量:", bg=Y2K_BG, font=Y2K_FONT).grid(row=2, column=2, sticky="e", padx=5)
+        self.entry_fofa_size = tk.Entry(f, width=8, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_fofa_size.insert(0, self.config_data.get("fofa_size", "100"))
-        self.entry_fofa_size.grid(row=2, column=3, pady=5, padx=5, ipady=3)
+        self.entry_fofa_size.grid(row=2, column=3, pady=4, padx=5, ipady=2)
 
-        self.btn_fofa_search = tk.Button(f, text="开始拉取数据", bg="#007AFF", fg="white", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=20, command=self.start_fofa_search)
-        self.btn_fofa_search.grid(row=3, column=1, pady=10, sticky="w")
+        self.btn_fofa_search = tk.Button(f, text="开始拉取数据", bg=Y2K_NAVY, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=18, pady=2, command=self.start_fofa_search)
+        self.btn_fofa_search.grid(row=3, column=1, pady=8, sticky="w")
 
-        ttk.Separator(f, orient='horizontal').grid(row=4, column=0, columnspan=4, sticky="ew", pady=15)
+        tk.Frame(f, bg=Y2K_DARK, height=2, bd=1, relief=tk.SUNKEN).grid(row=4, column=0, columnspan=4, sticky="ew", pady=10)
 
-        lbl_batch = tk.Label(f, text="【批量指纹查询 (涡轮并发版)】", bg="white", font=("Microsoft YaHei", 9, "bold"), fg="#FF9500")
-        lbl_batch.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        lbl_batch = tk.Label(f, text="【批量指纹查询 (涡轮并发版)】", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_MAROON)
+        lbl_batch.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
-        tk.Label(f, text="指纹TXT路径:", bg="white").grid(row=6, column=0, sticky="w")
-        self.entry_fofa_txt_path = tk.Entry(f, width=40, bg="#F2F2F7", bd=0)
+        tk.Label(f, text="指纹TXT路径:", bg=Y2K_BG, font=Y2K_FONT).grid(row=6, column=0, sticky="w")
+        self.entry_fofa_txt_path = tk.Entry(f, width=40, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_fofa_txt_path.insert(0, self.config_data.get("fofa_txt_path", ""))
-        self.entry_fofa_txt_path.grid(row=6, column=1, pady=5, padx=5, ipady=3, sticky="w")
-        tk.Button(f, text="浏览", bg="#E5E5EA", bd=0, padx=10, command=self.select_fofa_txt_file).grid(row=6, column=2, padx=5, sticky="w")
+        self.entry_fofa_txt_path.grid(row=6, column=1, pady=4, padx=5, ipady=2, sticky="w")
+        tk.Button(f, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=self.select_fofa_txt_file).grid(row=6, column=2, padx=5, sticky="w")
         self.enable_drag_drop(self.entry_fofa_txt_path, 'txt')
 
-        tk.Label(f, text="资产TXT路径:", bg="white").grid(row=7, column=0, sticky="w")
-        self.entry_fofa_asset_txt = tk.Entry(f, width=40, bg="#F2F2F7", bd=0)
+        tk.Label(f, text="资产TXT路径:", bg=Y2K_BG, font=Y2K_FONT).grid(row=7, column=0, sticky="w")
+        self.entry_fofa_asset_txt = tk.Entry(f, width=40, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_fofa_asset_txt.insert(0, self.config_data.get("fofa_asset_txt", ""))
-        self.entry_fofa_asset_txt.grid(row=7, column=1, pady=5, padx=5, ipady=3, sticky="w")
-        tk.Button(f, text="浏览", bg="#E5E5EA", bd=0, padx=10, command=self.select_fofa_asset_txt).grid(row=7, column=2, padx=5, sticky="w")
-        tk.Label(f, text="(支持异常熔断保护与安全断点续传)", bg="white", font=("Arial", 8), fg="#8E8E93").grid(row=7, column=3, sticky="w")
+        self.entry_fofa_asset_txt.grid(row=7, column=1, pady=4, padx=5, ipady=2, sticky="w")
+        tk.Button(f, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=self.select_fofa_asset_txt).grid(row=7, column=2, padx=5, sticky="w")
+        tk.Label(f, text="(支持异常熔断保护与安全断点续传)", bg=Y2K_BG, font=Y2K_FONT, fg="#404040").grid(row=7, column=3, sticky="w")
         self.enable_drag_drop(self.entry_fofa_asset_txt, 'txt')
 
-        tk.Label(f, text="阈值/并发:", bg="white").grid(row=8, column=0, sticky="w")
-        f_thres = tk.Frame(f, bg="white")
-        f_thres.grid(row=8, column=1, columnspan=2, sticky="w", pady=5, padx=5)
+        tk.Label(f, text="阈值/并发:", bg=Y2K_BG, font=Y2K_FONT).grid(row=8, column=0, sticky="w")
+        f_thres = tk.Frame(f, bg=Y2K_BG)
+        f_thres.grid(row=8, column=1, columnspan=2, sticky="w", pady=4, padx=5)
         
-        tk.Label(f_thres, text="淘汰阈值", bg="white", font=("Arial", 9)).pack(side=tk.LEFT)
-        self.entry_min_count = tk.Entry(f_thres, width=5, justify="center", bg="#F2F2F7", bd=0)
+        tk.Label(f_thres, text="淘汰阈值", bg=Y2K_BG, font=Y2K_FONT).pack(side=tk.LEFT)
+        self.entry_min_count = tk.Entry(f_thres, width=5, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_min_count.insert(0, self.config_data.get("fofa_threshold", "10"))
-        self.entry_min_count.pack(side=tk.LEFT, ipady=3, padx=(2, 15))
+        self.entry_min_count.pack(side=tk.LEFT, ipady=2, padx=(4, 15))
         
-        tk.Label(f_thres, text="并发线程", bg="white", font=("Arial", 9, "bold"), fg="#FF9500").pack(side=tk.LEFT)
-        self.entry_fofa_threads = tk.Entry(f_thres, width=5, justify="center", bg="#FFF0E0", bd=0, fg="#FF9500")
+        tk.Label(f_thres, text="并发线程", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_MAROON).pack(side=tk.LEFT)
+        self.entry_fofa_threads = tk.Entry(f_thres, width=5, justify="center", bg=Y2K_CREAM, fg=Y2K_MAROON, bd=2, relief=tk.SUNKEN, font=Y2K_FONT_BOLD)
         self.entry_fofa_threads.insert(0, self.config_data.get("fofa_threads", "3"))
-        self.entry_fofa_threads.pack(side=tk.LEFT, ipady=3, padx=(2, 10))
+        self.entry_fofa_threads.pack(side=tk.LEFT, ipady=2, padx=(4, 10))
 
-        f_btn_batch = tk.Frame(f, bg="white")
-        f_btn_batch.grid(row=9, column=1, columnspan=3, pady=10, sticky="w")
-        self.btn_fofa_batch = tk.Button(f_btn_batch, text="FOFA指纹TXT查询", bg="#FF9500", fg="white", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=20, command=self.batch_fofa_from_txt)
+        f_btn_batch = tk.Frame(f, bg=Y2K_BG)
+        f_btn_batch.grid(row=9, column=1, columnspan=3, pady=8, sticky="w")
+        self.btn_fofa_batch = tk.Button(f_btn_batch, text="FOFA查询", bg=Y2K_OLIVE, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=18, pady=2, command=self.batch_fofa_from_txt)
         self.btn_fofa_batch.pack(side=tk.LEFT)
-        self.btn_stop_batch = tk.Button(f_btn_batch, text="查询完当前资产停止", bg="#E5E5EA", fg="#A1A1A6", disabledforeground="#A1A1A6", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=15, state="disabled", command=self.stop_fofa_batch)
+        self.btn_stop_batch = tk.Button(f_btn_batch, text="查询完当前资产停止", bg=Y2K_FACE, fg=Y2K_DARK, disabledforeground=Y2K_DARK, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=14, pady=2, state="disabled", command=self.stop_fofa_batch)
         self.btn_stop_batch.pack(side=tk.LEFT, padx=10)
 
     def stop_fofa_batch(self):
@@ -785,103 +965,103 @@ class LinkOpenerApp:
         self.log("已触发优雅停止指令！程序将在正在跑的资产检索完毕后安全退出...")
 
     def setup_check_tab(self):
-        c = tk.Frame(self.tab_check, bg="white", padx=15, pady=5)
+        c = tk.Frame(self.tab_check, bg=Y2K_BG, padx=12, pady=6)
         c.pack(fill=tk.BOTH, expand=True)
 
-        r1 = tk.Frame(c, bg="white"); r1.pack(fill=tk.X, pady=2)
-        tk.Button(r1, text="粘贴剪贴板链接", bg="#F2F2F7", bd=0, command=self.paste_links).pack(side=tk.LEFT, padx=5)
-        tk.Button(r1, text="动态去重(链接)", bg="#F2F2F7", bd=0, command=self.remove_duplicates).pack(side=tk.LEFT, padx=5)
-        tk.Button(r1, text="反选所有复选框", bg="#F2F2F7", bd=0, command=self.invert_selection).pack(side=tk.LEFT, padx=5)
+        r1 = tk.Frame(c, bg=Y2K_BG); r1.pack(fill=tk.X, pady=2)
+        tk.Button(r1, text="粘贴剪贴板链接", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, command=self.paste_links).pack(side=tk.LEFT, padx=4)
+        tk.Button(r1, text="动态去重(链接)", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, command=self.remove_duplicates).pack(side=tk.LEFT, padx=4)
+        tk.Button(r1, text="反选所有复选框", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, command=self.invert_selection).pack(side=tk.LEFT, padx=4)
 
-        r_mark = tk.Frame(c, bg="white"); r_mark.pack(fill=tk.X, pady=5)
-        tk.Label(r_mark, text="目标列号(1-9):", bg="white", font=("Microsoft YaHei", 9, "bold"), fg="#5856D6").pack(side=tk.LEFT)
-        self.entry_col_index = tk.Entry(r_mark, width=4, justify="center", bg="#F2F2F7", bd=0)
+        r_mark = tk.Frame(c, bg=Y2K_BG); r_mark.pack(fill=tk.X, pady=4)
+        tk.Label(r_mark, text="目标列号(1-9):", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_NAVY).pack(side=tk.LEFT)
+        self.entry_col_index = tk.Entry(r_mark, width=4, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_col_index.insert(0, "5")
-        self.entry_col_index.pack(side=tk.LEFT, padx=5, ipady=2)
+        self.entry_col_index.pack(side=tk.LEFT, padx=5, ipady=1)
         
-        tk.Label(r_mark, text="包含关键词:", bg="white").pack(side=tk.LEFT, padx=(10, 2))
-        self.entry_mark_keyword = tk.Entry(r_mark, width=15, bg="#F2F2F7", bd=0)
-        self.entry_mark_keyword.pack(side=tk.LEFT, padx=5, ipady=2)
+        tk.Label(r_mark, text="包含关键词:", bg=Y2K_BG, font=Y2K_FONT).pack(side=tk.LEFT, padx=(10, 2))
+        self.entry_mark_keyword = tk.Entry(r_mark, width=15, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        self.entry_mark_keyword.pack(side=tk.LEFT, padx=5, ipady=1)
         
-        tk.Button(r_mark, text="标记包含项", bg="#E5E5EA", bd=0, command=self.mark_contains).pack(side=tk.LEFT, padx=5)
-        tk.Button(r_mark, text="目标列全部查重", bg="#E5E5EA", fg="#FF3B30", bd=0, command=self.mark_duplicates).pack(side=tk.LEFT, padx=5)
-        tk.Button(r_mark, text="目标列全部复制", bg="#E5E5EA", bd=0, command=self.copy_column_all).pack(side=tk.LEFT, padx=5)
+        tk.Button(r_mark, text="标记包含项", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, command=self.mark_contains).pack(side=tk.LEFT, padx=4)
+        tk.Button(r_mark, text="目标列全部查重", bg=Y2K_FACE, fg=Y2K_MAROON, bd=2, relief=tk.RAISED, font=Y2K_FONT_BOLD, padx=8, command=self.mark_duplicates).pack(side=tk.LEFT, padx=4)
+        tk.Button(r_mark, text="目标列全部复制", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, command=self.copy_column_all).pack(side=tk.LEFT, padx=4)
 
-        r_range = tk.Frame(c, bg="white"); r_range.pack(fill=tk.X, pady=5)
-        tk.Label(r_range, text="操作范围(序号):", bg="white", font=("Microsoft YaHei", 9, "bold")).pack(side=tk.LEFT)
-        self.entry_range_start = tk.Entry(r_range, width=6, justify="center", bg="#F2F2F7", bd=0)
+        r_range = tk.Frame(c, bg=Y2K_BG); r_range.pack(fill=tk.X, pady=4)
+        tk.Label(r_range, text="操作范围(序号):", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT)
+        self.entry_range_start = tk.Entry(r_range, width=6, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_range_start.insert(0, "1")
-        self.entry_range_start.pack(side=tk.LEFT, padx=5, ipady=2)
-        tk.Label(r_range, text="到", bg="white").pack(side=tk.LEFT)
-        self.entry_range_end = tk.Entry(r_range, width=6, justify="center", bg="#F2F2F7", bd=0)
+        self.entry_range_start.pack(side=tk.LEFT, padx=5, ipady=1)
+        tk.Label(r_range, text="到", bg=Y2K_BG, font=Y2K_FONT).pack(side=tk.LEFT)
+        self.entry_range_end = tk.Entry(r_range, width=6, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_range_end.insert(0, "0")
-        self.entry_range_end.pack(side=tk.LEFT, padx=5, ipady=2)
+        self.entry_range_end.pack(side=tk.LEFT, padx=5, ipady=1)
         
         self.entry_range_start.bind("<KeyRelease>", self.dynamic_check_range)
         self.entry_range_end.bind("<KeyRelease>", self.dynamic_check_range)
-        tk.Label(r_range, text="*(输入数字动态勾选)", font=("Arial", 8), fg="#8E8E93", bg="white").pack(side=tk.LEFT, padx=(5, 10))
+        tk.Label(r_range, text="*(输入数字动态勾选)", font=Y2K_FONT, fg="#404040", bg=Y2K_BG).pack(side=tk.LEFT, padx=(5, 10))
         
-        tk.Button(r_range, text="默认浏览器打开所选链接", bg="#E5E5EA", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=10, command=self.open_checked_links).pack(side=tk.LEFT, padx=5)
+        tk.Button(r_range, text="默认浏览器打开所选链接", bg=Y2K_FACE, fg=Y2K_NAVY, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=10, command=self.open_checked_links).pack(side=tk.LEFT, padx=5)
 
-        r2 = tk.Frame(c, bg="white"); r2.pack(fill=tk.X, pady=5)
-        tk.Label(r2, text="并发线程:", bg="white", font=("Microsoft YaHei", 9, "bold")).pack(side=tk.LEFT)
-        self.entry_threads = tk.Entry(r2, width=5, justify="center", bg="#F2F2F7", bd=0)
+        r2 = tk.Frame(c, bg=Y2K_BG); r2.pack(fill=tk.X, pady=4)
+        tk.Label(r2, text="并发线程:", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT)
+        self.entry_threads = tk.Entry(r2, width=5, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_threads.insert(0, self.config_data.get("threads", "200"))
-        self.entry_threads.pack(side=tk.LEFT, padx=5, ipady=2)
+        self.entry_threads.pack(side=tk.LEFT, padx=5, ipady=1)
         
-        tk.Label(r2, text="超时(秒):", bg="white", font=("Microsoft YaHei", 9, "bold")).pack(side=tk.LEFT, padx=(10, 0))
-        self.entry_timeout = tk.Entry(r2, width=5, justify="center", bg="#F2F2F7", bd=0)
+        tk.Label(r2, text="超时(秒):", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT, padx=(10, 0))
+        self.entry_timeout = tk.Entry(r2, width=5, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_timeout.insert(0, self.config_data.get("timeout", "3"))
-        self.entry_timeout.pack(side=tk.LEFT, padx=5, ipady=2)
+        self.entry_timeout.pack(side=tk.LEFT, padx=5, ipady=1)
 
-        tk.Label(r2, text="存活状态码:", bg="white", font=("Microsoft YaHei", 9, "bold")).pack(side=tk.LEFT, padx=(10, 0))
-        self.entry_status = tk.Entry(r2, width=5, justify="center", bg="#F2F2F7", bd=0)
+        tk.Label(r2, text="存活状态码:", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT, padx=(10, 0))
+        self.entry_status = tk.Entry(r2, width=5, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_status.insert(0, self.config_data.get("status_code", "200"))
-        self.entry_status.pack(side=tk.LEFT, padx=5, ipady=2)
+        self.entry_status.pack(side=tk.LEFT, padx=5, ipady=1)
         
-        self.btn_check = tk.Button(r2, text="对【已勾选】资产极速测活", bg="#34C759", fg="white", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=15, command=self.start_health_check)
-        self.btn_check.pack(side=tk.LEFT, padx=15)
-        self.btn_pause = tk.Button(r2, text="暂停", bg="#E5E5EA", fg="#A1A1A6", disabledforeground="#A1A1A6", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=10, state="disabled", command=self.pause_health_check)
-        self.btn_pause.pack(side=tk.LEFT, padx=5)
-        self.btn_stop = tk.Button(r2, text="停止", bg="#E5E5EA", fg="#A1A1A6", disabledforeground="#A1A1A6", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=10, state="disabled", command=self.stop_health_check)
-        self.btn_stop.pack(side=tk.LEFT, padx=5)
+        self.btn_check = tk.Button(r2, text="对【已勾选】资产极速测活", bg=Y2K_GREEN, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=14, command=self.start_health_check)
+        self.btn_check.pack(side=tk.LEFT, padx=12)
+        self.btn_pause = tk.Button(r2, text="暂停", bg=Y2K_FACE, fg=Y2K_DARK, disabledforeground=Y2K_DARK, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=10, state="disabled", command=self.pause_health_check)
+        self.btn_pause.pack(side=tk.LEFT, padx=4)
+        self.btn_stop = tk.Button(r2, text="停止", bg=Y2K_FACE, fg=Y2K_DARK, disabledforeground=Y2K_DARK, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=10, state="disabled", command=self.stop_health_check)
+        self.btn_stop.pack(side=tk.LEFT, padx=4)
 
-        path_frame = tk.Frame(c, bg="white")
-        path_frame.pack(fill=tk.X, pady=8)
+        path_frame = tk.Frame(c, bg=Y2K_BG)
+        path_frame.pack(fill=tk.X, pady=6)
 
-        f_imp = tk.Frame(path_frame, bg="white")
+        f_imp = tk.Frame(path_frame, bg=Y2K_BG)
         f_imp.pack(fill=tk.X, pady=2)
-        lbl_imp = tk.Label(f_imp, text="直连资产txt路径:", bg="#F2F2F7", font=("Microsoft YaHei", 9, "bold"), width=16, anchor="e")
-        lbl_imp.pack(side=tk.LEFT, ipady=3, padx=(0, 5))
-        self.entry_import_path = tk.Entry(f_imp, bg="#F2F2F7", bd=0)
+        lbl_imp = tk.Label(f_imp, text="直连资产txt路径:", bg=Y2K_FACE, fg="#000000", bd=1, relief=tk.GROOVE, font=Y2K_FONT_BOLD, width=16, anchor="e")
+        lbl_imp.pack(side=tk.LEFT, ipady=2, padx=(0, 5))
+        self.entry_import_path = tk.Entry(f_imp, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_import_path.insert(0, self.config_data.get("import_path", ""))
-        self.entry_import_path.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
-        tk.Button(f_imp, text="浏览", bg="#E5E5EA", bd=0, padx=10, command=self.select_import_file).pack(side=tk.LEFT, padx=(5, 0))
-        tk.Button(f_imp, text="导入为直连资产", bg="#5856D6", fg="white", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=10, command=self.import_txt_data).pack(side=tk.LEFT, padx=(5, 0))
+        self.entry_import_path.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        tk.Button(f_imp, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=self.select_import_file).pack(side=tk.LEFT, padx=(5, 0))
+        tk.Button(f_imp, text="导入为直连资产", bg=Y2K_PURPLE, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=10, command=self.import_txt_data).pack(side=tk.LEFT, padx=(5, 0))
         self.enable_drag_drop(self.entry_import_path, 'txt')
         
-        f_exp = tk.Frame(path_frame, bg="white")
+        f_exp = tk.Frame(path_frame, bg=Y2K_BG)
         f_exp.pack(fill=tk.X, pady=2)
-        lbl_exp = tk.Label(f_exp, text="导出资产文件夹:", bg="#F2F2F7", font=("Microsoft YaHei", 9, "bold"), width=16, anchor="e")
-        lbl_exp.pack(side=tk.LEFT, ipady=3, padx=(0, 5))
-        self.entry_export_dir = tk.Entry(f_exp, bg="#F2F2F7", bd=0)
+        lbl_exp = tk.Label(f_exp, text="导出资产文件夹:", bg=Y2K_FACE, fg="#000000", bd=1, relief=tk.GROOVE, font=Y2K_FONT_BOLD, width=16, anchor="e")
+        lbl_exp.pack(side=tk.LEFT, ipady=2, padx=(0, 5))
+        self.entry_export_dir = tk.Entry(f_exp, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_export_dir.insert(0, self.config_data.get("export_dir", ""))
-        self.entry_export_dir.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
-        tk.Button(f_exp, text="浏览", bg="#E5E5EA", bd=0, padx=10, command=self.select_export_dir).pack(side=tk.LEFT, padx=(5, 0))
-        tk.Button(f_exp, text="一键导出", bg="#007AFF", fg="white", font=("Microsoft YaHei", 9, "bold"), bd=0, padx=10, command=self.export_txt_data).pack(side=tk.LEFT, padx=(5, 0))
+        self.entry_export_dir.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        tk.Button(f_exp, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=self.select_export_dir).pack(side=tk.LEFT, padx=(5, 0))
+        tk.Button(f_exp, text="一键导出", bg=Y2K_NAVY, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=10, command=self.export_txt_data).pack(side=tk.LEFT, padx=(5, 0))
         self.enable_drag_drop(self.entry_export_dir, 'dir')
 
-        r4 = tk.Frame(c, bg="white"); r4.pack(fill=tk.X, pady=5)
-        tk.Label(r4, text="完成提示音(WAV):", bg="white", font=("Microsoft YaHei", 9, "bold"), fg="#007AFF").pack(side=tk.LEFT)
-        self.entry_sound_path = tk.Entry(r4, width=30, bg="#F2F2F7", bd=0)
+        r4 = tk.Frame(c, bg=Y2K_BG); r4.pack(fill=tk.X, pady=4)
+        tk.Label(r4, text="完成提示音(WAV):", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_NAVY).pack(side=tk.LEFT)
+        self.entry_sound_path = tk.Entry(r4, width=30, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_sound_path.insert(0, self.config_data.get("sound_path", ""))
-        self.entry_sound_path.pack(side=tk.LEFT, padx=5, ipady=2)
-        tk.Button(r4, text="浏览音频", bg="#E5E5EA", bd=0, command=self.select_sound).pack(side=tk.LEFT)
-        tk.Label(r4, text="(留空默认'叮'声)", bg="white", font=("Arial", 8), fg="#8E8E93").pack(side=tk.LEFT, padx=5)
+        self.entry_sound_path.pack(side=tk.LEFT, padx=5, ipady=1)
+        tk.Button(r4, text="浏览音频", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, command=self.select_sound).pack(side=tk.LEFT)
+        tk.Label(r4, text="(留空默认'叮'声)", bg=Y2K_BG, font=Y2K_FONT, fg="#404040").pack(side=tk.LEFT, padx=5)
         self.enable_drag_drop(self.entry_sound_path, 'wav')
 
         self.var_auto_shutdown = tk.BooleanVar(value=False)
-        tk.Checkbutton(r4, text="测试完成后自动保存并关机", variable=self.var_auto_shutdown, bg="white", font=("Microsoft YaHei", 9, "bold"), fg="#FF3B30").pack(side=tk.RIGHT, padx=5)
+        tk.Checkbutton(r4, text="测试完成后自动保存并关机", variable=self.var_auto_shutdown, bg=Y2K_BG, activebackground=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_MAROON).pack(side=tk.RIGHT, padx=5)
         
     def log(self, msg):
         t = time.strftime("%H:%M:%S")
@@ -923,8 +1103,12 @@ class LinkOpenerApp:
             s, e = int(s_str), int(e_str)
 
             for i, item in enumerate(self.tree.get_children(), 1):
-                target_state = "☑" if s <= i <= e else "☐"
                 vals = list(self.tree.item(item, 'values'))
+                try:
+                    row_id = int(vals[1])
+                except ValueError:
+                    row_id = i
+                target_state = "☑" if s <= row_id <= e else "☐"
                 if vals[0] != target_state:  
                     vals[0] = target_state
                     self.tree.item(item, values=vals)
@@ -935,14 +1119,17 @@ class LinkOpenerApp:
         except ValueError:
             pass 
 
-    def animate_delete(self, items_to_del, msg=None, chunk_size=1):
+    def animate_delete(self, items_to_del, msg=None, chunk_size=1, on_finish=None):
         if not items_to_del:
             self.reindex_table()
             self.all_checked = False
             self.headings_text["check"] = "1.☐ 选"
             self.tree.heading("check", text=self.headings_text["check"])
             self.is_animating = False
-            if msg: self.log(msg)
+            if on_finish:
+                on_finish()
+            if msg:
+                self.log(msg)
             return
             
         for _ in range(min(chunk_size, len(items_to_del))):
@@ -956,7 +1143,7 @@ class LinkOpenerApp:
         elif remain > 30: next_chunk, delay = 5, 20
         else: next_chunk, delay = 1, 30
             
-        self.root.after(delay, lambda: self.animate_delete(items_to_del, msg, next_chunk))
+        self.root.after(delay, lambda: self.animate_delete(items_to_del, msg, next_chunk, on_finish))
 
     def delete_checked_rows(self):
         if self.is_animating: return
@@ -967,6 +1154,51 @@ class LinkOpenerApp:
         self.is_animating = True
         self.log(f"开始动态清理 {len(items_to_del)} 条已勾选的记录...")
         self.animate_delete(items_to_del, msg="勾选清理完成。")
+
+    @staticmethod
+    def _is_ip_url(url_str):
+        raw = str(url_str).strip()
+        if not raw or raw in ("-", "待测"):
+            return False
+        if "://" not in raw:
+            raw = "http://" + raw
+        try:
+            parsed = urllib.parse.urlparse(raw)
+            host = parsed.hostname
+            if not host:
+                return False
+            ipaddress.ip_address(host)
+            return True
+        except ValueError:
+            return False
+
+    def keep_only_ip_rows(self):
+        if self.is_animating:
+            return
+        all_items = self.tree.get_children()
+        if not all_items:
+            return
+
+        items_to_del = []
+        for item in all_items:
+            vals = self.tree.item(item, 'values')
+            url_val = vals[5] if len(vals) > 5 else ""
+            if not self._is_ip_url(url_val):
+                items_to_del.append(item)
+
+        self.log("开始删除非IP资产...")
+        if not items_to_del:
+            self.log("检测完毕：6.资产链接列中全部为纯 IP 资产，无需剔除。")
+            return
+
+        self.is_animating = True
+        self.start_url_column_breathing()
+        kept_count = len(all_items) - len(items_to_del)
+        self.animate_delete(
+            items_to_del,
+            msg=f"非IP资产删除完成！共动态剔除 {len(items_to_del)} 条非IP资产，保留 {kept_count} 条纯IP。",
+            on_finish=self.stop_url_column_breathing
+        )
 
     def delete_highlighted_rows(self):
         if self.is_animating: return
@@ -1057,7 +1289,25 @@ class LinkOpenerApp:
             self.entry_range_end.insert(0, str(total))
         except: pass
 
-    def toggle_checkbox(self, event):
+    def on_tree_click_release(self, event):
+        region = self.tree.identify_region(event.x, event.y)
+        if region == "heading":
+            return
+
+        selected = self.tree.selection()
+        is_shift_or_ctrl = bool(event.state & 0x0001) or bool(event.state & 0x0004)
+
+        # 按住 Shift / Ctrl 或多选了多行时：将所有被高亮选中的行全部自动打上 ☑
+        if len(selected) > 1 or is_shift_or_ctrl:
+            for item in selected:
+                v = list(self.tree.item(item, 'values'))
+                if v[0] != "☑":
+                    v[0] = "☑"
+                    self.tree.item(item, values=v)
+            self.update_sys_info()
+            return
+
+        # 普通单行点击：点击第一列切换 ☑/☐
         if self.tree.identify_column(event.x) == '#1':
             item = self.tree.identify_row(event.y)
             if item:
@@ -1065,6 +1315,16 @@ class LinkOpenerApp:
                 v[0] = "☑" if v[0] == "☐" else "☐"
                 self.tree.item(item, values=v)
                 self.update_sys_info()
+
+    def on_key_select_check(self, event):
+        selected = self.tree.selection()
+        if len(selected) > 1:
+            for item in selected:
+                v = list(self.tree.item(item, 'values'))
+                if v[0] != "☑":
+                    v[0] = "☑"
+                    self.tree.item(item, values=v)
+            self.update_sys_info()
 
     def invert_selection(self):
         for item in self.tree.get_children():
@@ -1104,9 +1364,10 @@ class LinkOpenerApp:
             for i, l in enumerate(links, len(self.tree.get_children())+1):
                 url = l if l.startswith("http") else "http://" + l
                 tag = 'evenrow' if i%2==0 else 'oddrow'
-                self.tree.insert("","end", values=("☐",i,"-","-","-",url,"-","待测","-"), tags=(tag,))
+                self.tree.insert("", 0, values=("☐",i,"-","-","-",url,"-","待测","-"), tags=(tag,))
+            self.tree.yview_moveto(0)
             self.update_range_end()
-            self.log(f"手动粘贴导入 {len(links)} 条资产")
+            self.log(f"手动粘贴导入 {len(links)} 条资产至表格顶部")
         except: pass
 
     def select_fofa_txt_file(self):
@@ -1137,17 +1398,18 @@ class LinkOpenerApp:
             return
             
         try:
-            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
                 lines = [line.strip() for line in f.readlines() if line.strip()]
             count = 0
             start_idx = len(self.tree.get_children()) + 1
             for i, line in enumerate(lines, start_idx):
                 url = line if line.startswith("http") else "http://" + line
                 tag = 'evenrow' if i % 2 == 0 else 'oddrow'
-                self.tree.insert("", "end", values=("☐", i, "-", "-", "-", url, "-", "待测", "-"), tags=(tag,))
+                self.tree.insert("", 0, values=("☐", i, "-", "-", "-", url, "-", "待测", "-"), tags=(tag,))
                 count += 1
+            self.tree.yview_moveto(0)
             self.update_range_end()
-            self.log(f"成功从 {os.path.basename(path)} 导入 {count} 条资产。")
+            self.log(f"成功从 {os.path.basename(path)} 导入 {count} 条资产至表格顶部。")
         except Exception as e:
             self.log(f"导入失败: {str(e)}")
             
@@ -1202,33 +1464,40 @@ class LinkOpenerApp:
         os.system("shutdown -s -t 60")
 
     def reindex_table(self):
-        for i, item in enumerate(self.tree.get_children(), 1):
+        children = self.tree.get_children()
+        total = len(children)
+        # 保持最底下是最早的资产(ID=1)，最上面是最新的资产(ID=total)
+        for idx, item in enumerate(children):
+            row_id = total - idx
             vals = list(self.tree.item(item, 'values'))
-            vals[1] = str(i)
-            tag = 'evenrow' if i % 2 == 0 else 'oddrow'
-            self.tree.item(item, values=vals, tags=(tag,))
+            vals[1] = str(row_id)
+            tag = 'evenrow' if row_id % 2 == 0 else 'oddrow'
+            current_tags = list(self.tree.item(item, 'tags'))
+            new_tags = [t for t in current_tags if t not in ('oddrow', 'evenrow')]
+            new_tags.insert(0, tag)
+            self.tree.item(item, values=vals, tags=tuple(new_tags))
         self.update_range_end()
 
     def pause_health_check(self):
         if self.pause_event.is_set():
             self.pause_event.clear()
-            self.btn_pause.config(text="继续", bg="#34C759", fg="white")
+            self.btn_pause.config(text="继续", bg=Y2K_GREEN, fg="#FFFFFF")
             self.log("测活已被暂停...")
         else:
             self.pause_event.set()
-            self.btn_pause.config(text="暂停", bg="#FF9500", fg="white")
+            self.btn_pause.config(text="暂停", bg=Y2K_OLIVE, fg="#FFFFFF")
             self.log("测活恢复继续...")
 
     def stop_health_check(self):
         self.stop_scan = True
         self.pause_event.set() 
         self.log("正在停止测活，等待当前线程退出...")
-        self.btn_pause.config(state="disabled", bg="#E5E5EA", fg="#A1A1A6")
-        self.btn_stop.config(state="disabled", bg="#E5E5EA", fg="#A1A1A6")
+        self.btn_pause.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK)
+        self.btn_stop.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK)
 
     def batch_fofa_from_txt(self):
         fofa_key = self.entry_fofa_key.get().strip()
-        size_val = self.entry_fofa_size.get().strip()
+        size_val = self.entry_fofa_size.get().strip() or "100"
         fp_path = self.entry_fofa_txt_path.get().strip()
         asset_path = self.entry_fofa_asset_txt.get().strip()
         
@@ -1240,9 +1509,9 @@ class LinkOpenerApp:
             return
             
         try: threshold = int(self.entry_min_count.get().strip())
-        except: threshold = 10
-        try: fofa_threads = int(self.entry_fofa_threads.get().strip())
-        except: fofa_threads = 3
+        except: threshold = 0
+        try: fofa_threads = max(1, int(self.entry_fofa_threads.get().strip()))
+        except: fofa_threads = 1
         
         export_folder = self.entry_export_dir.get().strip()
         if not export_folder or not os.path.isdir(export_folder):
@@ -1254,32 +1523,73 @@ class LinkOpenerApp:
 
         self.stop_fofa_batch_flag = False
         self.btn_fofa_batch.config(state="disabled", text="批量查询中...")
-        self.btn_stop_batch.config(state="normal", bg="#FF3B30", fg="white", text="查询完当前资产停止")
-        self.log(f"正在准备启动 FOFA 多线程涡轮并发引擎 (当前设置 {fofa_threads} 线程全开)...")
+        self.btn_stop_batch.config(state="normal", bg=Y2K_MAROON, fg="#FFFFFF", text="查询完当前资产停止")
+        self.log(f"正在准备启动 FOFA 多线程涡轮并发引擎 (当前设置 {fofa_threads} 线程)...")
         
         def _task():
             try:
-                with open(fp_path, 'r', encoding='utf-8', errors='ignore') as f:
+                with open(fp_path, 'r', encoding='utf-8-sig', errors='ignore') as f:
                     fp_lines = [line.strip() for line in f.readlines() if line.strip()]
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror("错误", f"指纹TXT读取失败: {e}"))
-                self.root.after(0, lambda: self.btn_fofa_batch.config(state="normal", text="FOFA指纹TXT查询"))
-                self.root.after(0, lambda: self.btn_stop_batch.config(state="disabled", bg="#E5E5EA", fg="#A1A1A6", text="查询完当前资产停止"))
+                self.root.after(0, lambda: self.btn_fofa_batch.config(state="normal", text="FOFA查询"))
+                self.root.after(0, lambda: self.btn_stop_batch.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK, text="查询完当前资产停止"))
                 return
                 
-            asset_lines = []
-            if asset_path and os.path.isfile(asset_path):
-                try:
-                    with open(asset_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        asset_lines = [line.strip() for line in f.readlines() if line.strip()]
-                except Exception as e:
-                    self.root.after(0, lambda: messagebox.showerror("错误", f"资产TXT读取失败: {e}"))
-                    self.root.after(0, lambda: self.btn_fofa_batch.config(state="normal", text="FOFA指纹TXT查询"))
-                    self.root.after(0, lambda: self.btn_stop_batch.config(state="disabled", bg="#E5E5EA", fg="#A1A1A6", text="查询完当前资产停止"))
-                    return
+            if not fp_lines:
+                self.root.after(0, lambda: messagebox.showwarning("提示", "指纹TXT文件内容为空！"))
+                self.root.after(0, lambda: self.btn_fofa_batch.config(state="normal", text="FOFA查询"))
+                self.root.after(0, lambda: self.btn_stop_batch.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK, text="查询完当前资产停止"))
+                return
 
-            all_to_del_ids = []
+            asset_lines = []
+            if asset_path:
+                if os.path.isfile(asset_path):
+                    try:
+                        with open(asset_path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+                            asset_lines = [line.strip() for line in f.readlines() if line.strip()]
+                    except Exception as e:
+                        self.root.after(0, lambda: messagebox.showerror("错误", f"资产TXT读取失败: {e}"))
+                        self.root.after(0, lambda: self.btn_fofa_batch.config(state="normal", text="FOFA查询"))
+                        self.root.after(0, lambda: self.btn_stop_batch.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK, text="查询完当前资产停止"))
+                        return
+                else:
+                    self.root.after(0, lambda: self.log("提示: 资产TXT路径不存在，将直接按单指纹TXT模式进行批量查询。"))
+
             file_lock = threading.Lock()
+            rate_lock = threading.Lock()
+            last_req_time = [0.0]
+
+            def _fofa_api_request(query_str):
+                qbase64 = base64.b64encode(query_str.encode('utf-8')).decode('utf-8')
+                fields_str = "host,ip,port,country_name,title,product,icp"
+                params = {"key": fofa_key, "qbase64": qbase64, "size": size_val, "fields": fields_str}
+                url = "https://fofa.info/api/v1/search/all"
+                
+                for attempt in range(3):
+                    with rate_lock:
+                        now = time.time()
+                        elapsed = now - last_req_time[0]
+                        if elapsed < 1.0:
+                            time.sleep(1.0 - elapsed)
+                        last_req_time[0] = time.time()
+                        
+                    r = requests.get(url, params=params, headers=HEADERS, timeout=60, verify=False)
+                    data = r.json()
+                    if data.get("error"):
+                        errmsg = str(data.get("errmsg", ""))
+                        if any(k in errmsg.lower() for k in ["rate", "limit", "过快", "频繁", "-700", "429"]) and attempt < 2:
+                            time.sleep(2.0 * (attempt + 1))
+                            continue
+                    return data
+                return data
+
+            def _clean_asset_host(raw_asset):
+                clean = raw_asset.strip()
+                if "://" in clean:
+                    clean = clean.split("://", 1)[1]
+                clean = clean.split("/")[0]
+                return clean
 
             def _process_single_asset(asset):
                 if self.stop_fofa_batch_flag: return
@@ -1288,32 +1598,26 @@ class LinkOpenerApp:
                 asset_all_success = True 
                 asset_output_blocks = []
                 asset_saved_count = 0
+                clean_host = _clean_asset_host(asset)
                 
                 for fp in fp_lines:
                     if self.stop_fofa_batch_flag: break
                     self.root.after(0, lambda f=fp, a=asset: self.log(f"[{a}] 正在注入指纹: {f}"))
                     
-                    if '""' in fp: query = fp.replace('""', f'"{asset}"')
-                    elif '{}' in fp: query = fp.replace('{}', asset)
-                    else: query = f'({fp}) && host="{asset}"'
+                    if '""' in fp: query = fp.replace('""', f'"{clean_host}"')
+                    elif '{}' in fp: query = fp.replace('{}', clean_host)
+                    else: query = f'({fp}) && (host="{clean_host}" || domain="{clean_host}" || ip="{clean_host}")'
                         
-                    qbase64 = base64.b64encode(query.encode('utf-8')).decode('utf-8')
-                    fields_str = "host,ip,port,country_name,title,product,icp"
-                    params = {"key": fofa_key, "qbase64": qbase64, "size": size_val, "fields": fields_str}
-                    url = "https://fofa.info/api/v1/search/all"
-                    
                     try:
-                        r = requests.get(url, params=params, headers=HEADERS, timeout=60, verify=False)
-                        data = r.json()
+                        data = _fofa_api_request(query)
                         
                         if not data.get("error"):
                             res = data.get("results", [])
                             
                             if res:
-                                is_under_threshold = len(res) < threshold
+                                is_under_threshold = (threshold > 0 and len(res) < threshold)
                                 
-                                def _gui_insert_async(data_list=res, under=is_under_threshold):
-                                    local_inserted_ids = []
+                                def _gui_insert_async(data_list=res):
                                     for item_data in data_list:
                                         host = str(item_data[0]) if len(item_data) > 0 else ""
                                         country = str(item_data[3]) if len(item_data) > 3 else "-"
@@ -1322,13 +1626,12 @@ class LinkOpenerApp:
                                         icp = str(item_data[6]) if len(item_data) > 6 else "-"
                                         
                                         link = host if host.startswith("http") else "http://" + host
-                                        tag = 'evenrow' if (len(self.tree.get_children()) + 1) % 2 == 0 else 'oddrow'
-                                        v = ("☐", len(self.tree.get_children()) + 1, country, icp, title, link, "-", "待测", product)
-                                        iid = self.tree.insert("", "end", values=v, tags=(tag,))
-                                        local_inserted_ids.append(iid)
+                                        idx = len(self.tree.get_children()) + 1
+                                        tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
+                                        v = ("☐", idx, country, icp, title, link, "-", "待测", product)
+                                        self.tree.insert("", 0, values=v, tags=(tag,))
+                                    self.tree.yview_moveto(0)
                                     self.update_range_end()
-                                    if under:
-                                        all_to_del_ids.extend(local_inserted_ids)
                                 self.root.after(0, _gui_insert_async)
                         
                                 if not is_under_threshold:
@@ -1345,16 +1648,18 @@ class LinkOpenerApp:
                                         block_lines.append(link)
                                     asset_output_blocks.append("\n".join(block_lines) + "\n")
                                     asset_saved_count += len(res)
-                                    self.root.after(0, lambda a=asset, cnt=len(res): self.log(f"{a}查询完成，共{cnt}条记录，已加入汇总输出"))
+                                    self.root.after(0, lambda a=asset, cnt=len(res): self.log(f"{a}查询完成，共{cnt}条记录，已置顶加入表格与汇总输出"))
                                 else:
-                                    self.root.after(0, lambda a=asset, cnt=len(res): self.log(f"{a}查询完成，共{cnt}条记录 (未达阈值，拒绝入库)"))
+                                    self.root.after(0, lambda a=asset, cnt=len(res): self.log(f"{a}查询完成，共{cnt}条记录 (已置顶显示至表格；未达阈值{threshold}，跳过导出TXT)"))
                             else:
                                 self.root.after(0, lambda a=asset: self.log(f"{a}查询完成，共0条记录"))
 
                         else:
                             err_msg = data.get("errmsg", "未知API接口错误")
                             self.root.after(0, lambda a=asset, err=err_msg: self.log(f"[{a}] 遭FOFA拦截/报错: {err}"))
-                            asset_all_success = False 
+                            if any(k in str(err_msg) for k in ["权限", "余额", "key", "Key", "-100", "401", "820031"]):
+                                asset_all_success = False
+                                break
                             
                     except requests.exceptions.RequestException as e:
                         self.root.after(0, lambda a=asset, err=str(e): self.log(f"[{a}] 查询请求失败: {err}"))
@@ -1362,10 +1667,6 @@ class LinkOpenerApp:
                     except Exception as e:
                         self.root.after(0, lambda a=asset, err=str(e): self.log(f"[{a}] 查询异常: {err}"))
                         asset_all_success = False 
-                        
-                    if not asset_all_success:
-                        self.root.after(0, lambda a=asset: self.log(f"[{a}] 触发异常保护，放弃剩余指纹，跳至下一资产..."))
-                        break 
 
                 if asset_output_blocks:
                     safe_asset_name = re.sub(r'[\\/:*?"<>|]', '_', asset)
@@ -1382,7 +1683,7 @@ class LinkOpenerApp:
                     if asset_all_success:
                         with file_lock:
                             try:
-                                with open(asset_path, 'r', encoding='utf-8', errors='ignore') as f_read:
+                                with open(asset_path, 'r', encoding='utf-8-sig', errors='ignore') as f_read:
                                     current_lines = [l.strip() for l in f_read.readlines() if l.strip()]
                                 
                                 if asset in current_lines:
@@ -1394,28 +1695,22 @@ class LinkOpenerApp:
                             except Exception:
                                 pass
                     else:
-                        self.root.after(0, lambda a=asset: self.log(f"资产 {a} 存在报错，未彻底查完，已保留在TXT中防丢失！"))
+                        self.root.after(0, lambda a=asset: self.log(f"资产 {a} 存在异常，已保留在TXT中防丢失！"))
 
             def _process_single_fp(fp):
                 if self.stop_fofa_batch_flag: return
                 self.root.after(0, lambda q=fp: self.log(f"正在查询指纹: {q}"))
                 
-                qbase64 = base64.b64encode(fp.encode('utf-8')).decode('utf-8')
-                fields_str = "host,ip,port,country_name,title,product,icp"
-                params = {"key": fofa_key, "qbase64": qbase64, "size": size_val, "fields": fields_str}
-                url = "https://fofa.info/api/v1/search/all"
-                
                 try:
-                    r = requests.get(url, params=params, headers=HEADERS, timeout=60, verify=False)
-                    data = r.json()
+                    data = _fofa_api_request(fp)
                     
                     if not data.get("error"):
                         res = data.get("results", [])
                         
                         if res:
-                            is_under_threshold = len(res) < threshold
-                            def _gui_insert_async(data_list=res, under=is_under_threshold):
-                                local_inserted_ids = []
+                            is_under_threshold = (threshold > 0 and len(res) < threshold)
+                            
+                            def _gui_insert_async(data_list=res):
                                 for item_data in data_list:
                                     host = str(item_data[0]) if len(item_data) > 0 else ""
                                     country = str(item_data[3]) if len(item_data) > 3 else "-"
@@ -1424,13 +1719,12 @@ class LinkOpenerApp:
                                     icp = str(item_data[6]) if len(item_data) > 6 else "-"
                                     
                                     link = host if host.startswith("http") else "http://" + host
-                                    tag = 'evenrow' if (len(self.tree.get_children()) + 1) % 2 == 0 else 'oddrow'
-                                    v = ("☐", len(self.tree.get_children()) + 1, country, icp, title, link, "-", "待测", product)
-                                    iid = self.tree.insert("", "end", values=v, tags=(tag,))
-                                    local_inserted_ids.append(iid)
+                                    idx = len(self.tree.get_children()) + 1
+                                    tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
+                                    v = ("☐", idx, country, icp, title, link, "-", "待测", product)
+                                    self.tree.insert("", 0, values=v, tags=(tag,))
+                                self.tree.yview_moveto(0)
                                 self.update_range_end()
-                                if under:
-                                    all_to_del_ids.extend(local_inserted_ids)
                             self.root.after(0, _gui_insert_async)
                 
                             if not is_under_threshold:
@@ -1448,11 +1742,14 @@ class LinkOpenerApp:
                                                 link = host if host.startswith("http") else "http://" + host
                                                 sf.write(f"{link}\n")
                                     except Exception: pass
-                            self.root.after(0, lambda q=fp, cnt=len(res), d=export_folder: self.log(f"{q} 查询完成，共{cnt}条记录，已保存到{d}"))
+                                self.root.after(0, lambda q=fp, cnt=len(res), d=export_folder: self.log(f"{q} 查询完成，共{cnt}条记录，已置顶导入表格并保存到{d}"))
+                            else:
+                                self.root.after(0, lambda q=fp, cnt=len(res): self.log(f"{q} 查询完成，共{cnt}条记录 (已置顶导入表格；未达阈值{threshold}，跳过保存TXT)"))
                         else:
-                            self.root.after(0, lambda q=fp, cnt=len(res): self.log(f"{q} 查询完成，共{cnt}条记录 (未达阈值，拒绝入库)"))
+                            self.root.after(0, lambda q=fp: self.log(f"{q} 查询完成，共0条记录"))
                     else:
-                        self.root.after(0, lambda q=fp: self.log(f"{q} 查询完成，共0条记录"))
+                        err_msg = data.get("errmsg", "未知API接口错误")
+                        self.root.after(0, lambda q=fp, err=err_msg: self.log(f"[{q}] 获取失败，原因: {err}"))
                         
                 except requests.exceptions.RequestException as e:
                     self.root.after(0, lambda q=fp, err=str(e): self.log(f"[{q}] 查询请求失败: {err}"))
@@ -1460,35 +1757,34 @@ class LinkOpenerApp:
                     self.root.after(0, lambda q=fp, err=str(e): self.log(f"[{q}] 查询异常: {err}"))
 
             if asset_lines:
-                self.root.after(0, lambda: self.log(f"启动并发引擎队列 (已解除全局锁，{fofa_threads} 线程全速并发)，开始交叉探测..."))
+                self.root.after(0, lambda: self.log(f"启动并发引擎队列 ({fofa_threads} 线程)，开始资产+指纹交叉探测..."))
                 with concurrent.futures.ThreadPoolExecutor(max_workers=fofa_threads) as executor:
                     futures = [executor.submit(_process_single_asset, a) for a in asset_lines]
                     concurrent.futures.wait(futures) 
             else:
-                self.root.after(0, lambda: self.log(f"启动并发引擎队列 (已解除全局锁，{fofa_threads} 线程全速并发)，开始批量采集指纹！"))
+                self.root.after(0, lambda: self.log(f"启动并发引擎队列 ({fofa_threads} 线程)，开始批量采集指纹TXT！"))
                 with concurrent.futures.ThreadPoolExecutor(max_workers=fofa_threads) as executor:
                     futures = [executor.submit(_process_single_fp, fp) for fp in fp_lines]
                     concurrent.futures.wait(futures)
 
-            self.root.after(0, lambda: self.log("=" * 30))
-            if self.stop_fofa_batch_flag:
-                self.root.after(0, lambda: self.log("所有正在执行的资产均已处理完毕并断点保存，任务已安全终止！"))
-            else:
-                self.root.after(0, lambda: self.log("批量引擎任务彻底执行完毕！"))
-            
-            self.root.after(0, lambda: self.btn_fofa_batch.config(state="normal", text="FOFA指纹TXT查询"))
-            self.root.after(0, lambda: self.btn_stop_batch.config(state="disabled", bg="#E5E5EA", fg="#A1A1A6", text="查询完当前资产停止"))
-            
-            if all_to_del_ids:
-                self.root.after(0, lambda: self.log(f"识别到存在 {len(all_to_del_ids)} 条界面记录不满足阈值({threshold})。"))
-                self.root.after(1000, lambda: self.log("即将开始动态淘汰界面上的劣质资产..."))
-                self.is_animating = True
-                self.root.after(2000, lambda: self.animate_delete(all_to_del_ids, msg="已成功清理界面上的非标准资产。"))
+            def _on_batch_complete():
+                self.log("=" * 30)
+                if self.stop_fofa_batch_flag:
+                    self.log("所有正在执行的资产均已处理完毕并断点保存，任务已安全终止！")
+                else:
+                    self.log("批量引擎任务彻底执行完毕！")
+                self.btn_fofa_batch.config(state="normal", text="FOFA查询")
+                self.btn_stop_batch.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK, text="查询完当前资产停止")
+                # 若按下了「仅保留IP」按钮，批量指纹查询完成后自动开始动态删除非IP资产
+                if self.only_ip_mode:
+                    self.keep_only_ip_rows()
+
+            self.root.after(0, _on_batch_complete)
                 
         threading.Thread(target=_task, daemon=True).start()
 
     def start_fofa_search(self):
-        key, query, size = self.entry_fofa_key.get(), self.entry_fofa_query.get(), self.entry_fofa_size.get()
+        key, query, size = self.entry_fofa_key.get().strip(), self.entry_fofa_query.get().strip(), self.entry_fofa_size.get().strip()
         if not key or not query: return
         self.btn_fofa_search.config(state="disabled", text="检索中...")
         self.log(f"向 FOFA 请求单条语法: {query}")
@@ -1505,24 +1801,33 @@ class LinkOpenerApp:
                     
                 if not data.get("error"):
                     res = data.get("results", [])
-                    for i, item in enumerate(res, len(self.tree.get_children())+1):
-                        host = str(item[0]) if len(item) > 0 else ""
-                        country = str(item[3]) if len(item) > 3 else "-"
-                        title = str(item[4]) if len(item) > 4 else "-"
-                        product = str(item[5]) if len(item) > 5 else "-"
-                        icp = str(item[6]) if len(item) > 6 else "-"
-                        
-                        link = host if host.startswith("http") else "http://" + host
-                        tag = 'evenrow' if i%2==0 else 'oddrow'
-                        v = ("☐", i, country, icp, title, link, "-", "待测", product)
-                        self.root.after(0, lambda val=v, t=tag: self.tree.insert("", "end", values=val, tags=(t,)))
-                    self.log(f"成功导入 {len(res)} 条资产")
-                    self.root.after(200, self.update_range_end) 
+                    def _gui_insert_single(data_list=res):
+                        for item in data_list:
+                            host = str(item[0]) if len(item) > 0 else ""
+                            country = str(item[3]) if len(item) > 3 else "-"
+                            title = str(item[4]) if len(item) > 4 else "-"
+                            product = str(item[5]) if len(item) > 5 else "-"
+                            icp = str(item[6]) if len(item) > 6 else "-"
+                            
+                            link = host if host.startswith("http") else "http://" + host
+                            idx = len(self.tree.get_children()) + 1
+                            tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
+                            v = ("☐", idx, country, icp, title, link, "-", "待测", product)
+                            self.tree.insert("", 0, values=v, tags=(tag,))
+                        self.tree.yview_moveto(0)
+                        self.update_range_end()
+                        self.log(f"成功导入 {len(data_list)} 条资产至表格顶部")
+                        # 若按下了「仅保留IP」按钮，单条语法查询完成后自动开始动态删除非IP资产
+                        if self.only_ip_mode:
+                            self.keep_only_ip_rows()
+                    self.root.after(0, _gui_insert_single)
                 else:
                     err_msg = data.get("errmsg", "未知接口错误")
-                    self.log(f"获取失败，原因: {err_msg}")
-            except Exception as e: self.log(f"请求崩溃或网络错误: {str(e)}")
-            finally: self.root.after(0, lambda: self.btn_fofa_search.config(state="normal", text="开始拉取数据"))
+                    self.root.after(0, lambda err=err_msg: self.log(f"获取失败，原因: {err}"))
+            except Exception as e:
+                self.root.after(0, lambda err=str(e): self.log(f"请求崩溃或网络错误: {err}"))
+            finally:
+                self.root.after(0, lambda: self.btn_fofa_search.config(state="normal", text="开始拉取数据"))
         
         threading.Thread(target=_task, daemon=True).start()
 
@@ -1545,8 +1850,8 @@ class LinkOpenerApp:
         self.pause_event.set()
         
         self.btn_check.config(state="disabled", text="测活中...")
-        self.btn_pause.config(state="normal", text="暂停", bg="#FF9500", fg="white")
-        self.btn_stop.config(state="normal", bg="#FF3B30", fg="white")
+        self.btn_pause.config(state="normal", text="暂停", bg=Y2K_OLIVE, fg="#FFFFFF")
+        self.btn_stop.config(state="normal", bg=Y2K_MAROON, fg="#FFFFFF")
         
         self.log(f"启动涡轮测活: 目标 {len(items)} 条 | 并发: {threads} | 超时: {timeout_val}s | 匹配状态码: {target_codes}")
         
@@ -1597,8 +1902,8 @@ class LinkOpenerApp:
             
             self.root.after(0, self.reindex_table)
             self.root.after(0, lambda: self.btn_check.config(state="normal", text="对【已勾选】资产极速测活"))
-            self.root.after(0, lambda: self.btn_pause.config(state="disabled", bg="#E5E5EA", fg="#A1A1A6", text="暂停"))
-            self.root.after(0, lambda: self.btn_stop.config(state="disabled", bg="#E5E5EA", fg="#A1A1A6"))
+            self.root.after(0, lambda: self.btn_pause.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK, text="暂停"))
+            self.root.after(0, lambda: self.btn_stop.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK))
             
             if not self.stop_scan:
                 self.root.after(0, lambda: self.log("极速测活完成！失效死链已动态剔除。"))
