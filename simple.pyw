@@ -13,6 +13,7 @@ import csv
 import subprocess
 import base64
 import ipaddress
+from collections import deque
 
 # 引入 requests 库，并强行关闭 SSL 不安全警告
 import requests
@@ -109,6 +110,11 @@ class LinkOpenerApp:
         self.breath_idx = 0
         self.is_breathing = False
         self.only_ip_mode = False  # 「仅保留IP」按钮按下状态标记
+
+        # 流式日志队列与状态锁
+        self.log_queue = deque()
+        self.log_lock = threading.Lock()
+        self.is_log_streaming = False
 
         self.style = ttk.Style()
         if 'clam' in self.style.theme_names():
@@ -914,7 +920,7 @@ class LinkOpenerApp:
         self.entry_fofa_size.insert(0, self.config_data.get("fofa_size", "100"))
         self.entry_fofa_size.grid(row=2, column=3, pady=4, padx=5, ipady=2)
 
-        self.btn_fofa_search = tk.Button(f, text="开始拉取数据", bg=Y2K_NAVY, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=18, pady=2, command=self.start_fofa_search)
+        self.btn_fofa_search = tk.Button(f, text="单次查询", bg=Y2K_NAVY, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=18, pady=2, command=self.start_fofa_search)
         self.btn_fofa_search.grid(row=3, column=1, pady=8, sticky="w")
 
         tk.Frame(f, bg=Y2K_DARK, height=2, bd=1, relief=tk.SUNKEN).grid(row=4, column=0, columnspan=4, sticky="ew", pady=10)
@@ -954,7 +960,7 @@ class LinkOpenerApp:
 
         f_btn_batch = tk.Frame(f, bg=Y2K_BG)
         f_btn_batch.grid(row=9, column=1, columnspan=3, pady=8, sticky="w")
-        self.btn_fofa_batch = tk.Button(f_btn_batch, text="FOFA查询", bg=Y2K_OLIVE, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=18, pady=2, command=self.batch_fofa_from_txt)
+        self.btn_fofa_batch = tk.Button(f_btn_batch, text="批量查询", bg=Y2K_OLIVE, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=18, pady=2, command=self.batch_fofa_from_txt)
         self.btn_fofa_batch.pack(side=tk.LEFT)
         self.btn_stop_batch = tk.Button(f_btn_batch, text="查询完当前资产停止", bg=Y2K_FACE, fg=Y2K_DARK, disabledforeground=Y2K_DARK, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=14, pady=2, state="disabled", command=self.stop_fofa_batch)
         self.btn_stop_batch.pack(side=tk.LEFT, padx=10)
@@ -1081,10 +1087,49 @@ class LinkOpenerApp:
         
     def log(self, msg):
         t = time.strftime("%H:%M:%S")
+        raw_lines = str(msg).split("\n")
+        need_start = False
+        with self.log_lock:
+            for idx, line in enumerate(raw_lines):
+                if idx == 0 and line == "":
+                    # 保留像 "\n--- 线程启动..." 开头的空行分隔效果
+                    self.log_queue.append("")
+                else:
+                    self.log_queue.append(f"[{t}] {line}")
+            if not self.is_log_streaming:
+                self.is_log_streaming = True
+                need_start = True
+        if need_start:
+            self.root.after(0, self._process_log_queue)
+
+    def _process_log_queue(self):
+        line = None
+        with self.log_lock:
+            if self.log_queue:
+                line = self.log_queue.popleft()
+            else:
+                self.is_log_streaming = False
+                return
+
         self.text_log.config(state="normal")
-        self.text_log.insert(tk.END, f"[{t}] {msg}\n")
+        self.text_log.insert(tk.END, f"{line}\n")
         self.text_log.see(tk.END)
         self.text_log.config(state="disabled")
+
+        with self.log_lock:
+            q_len = len(self.log_queue)
+            if q_len == 0:
+                self.is_log_streaming = False
+                return
+
+        # 流式逐行输出间隔：平时每行间隔 65ms 丝滑滚动；若积压较多则自动微调提速防卡顿
+        if q_len > 40:
+            delay = 20
+        elif q_len > 15:
+            delay = 40
+        else:
+            delay = 65
+        self.root.after(delay, self._process_log_queue)
 
     def save_app_config(self, silent=False):
         self.config_data["status_code"] = self.entry_status.get().strip() if hasattr(self, 'entry_status') else "200"
@@ -1566,13 +1611,13 @@ class LinkOpenerApp:
                     fp_lines = [line.strip() for line in f.readlines() if line.strip()]
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror("错误", f"指纹TXT读取失败: {e}"))
-                self.root.after(0, lambda: self.btn_fofa_batch.config(state="normal", text="FOFA查询"))
+                self.root.after(0, lambda: self.btn_fofa_batch.config(state="normal", text="批量查询"))
                 self.root.after(0, lambda: self.btn_stop_batch.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK, text="查询完当前资产停止"))
                 return
                 
             if not fp_lines:
                 self.root.after(0, lambda: messagebox.showwarning("提示", "指纹TXT文件内容为空！"))
-                self.root.after(0, lambda: self.btn_fofa_batch.config(state="normal", text="FOFA查询"))
+                self.root.after(0, lambda: self.btn_fofa_batch.config(state="normal", text="批量查询"))
                 self.root.after(0, lambda: self.btn_stop_batch.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK, text="查询完当前资产停止"))
                 return
 
@@ -1584,15 +1629,26 @@ class LinkOpenerApp:
                             asset_lines = [line.strip() for line in f.readlines() if line.strip()]
                     except Exception as e:
                         self.root.after(0, lambda: messagebox.showerror("错误", f"资产TXT读取失败: {e}"))
-                        self.root.after(0, lambda: self.btn_fofa_batch.config(state="normal", text="FOFA查询"))
+                        self.root.after(0, lambda: self.btn_fofa_batch.config(state="normal", text="批量查询"))
                         self.root.after(0, lambda: self.btn_stop_batch.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK, text="查询完当前资产停止"))
                         return
                 else:
-                    self.root.after(0, lambda: self.log("提示: 资产TXT路径不存在，将直接按单指纹TXT模式进行批量查询。"))
+                    self.log("提示: 资产TXT路径不存在，将直接按单指纹TXT模式进行批量查询。")
 
             file_lock = threading.Lock()
             rate_lock = threading.Lock()
+            stagger_lock = threading.Lock()
             last_req_time = [0.0]
+            last_start_time = [0.0]
+
+            def _stagger_thread_start():
+                """让并发线程交错启动，避免瞬间同时抛出大量日志"""
+                with stagger_lock:
+                    now = time.time()
+                    elapsed = now - last_start_time[0]
+                    if elapsed < 0.15:
+                        time.sleep(0.15 - elapsed)
+                    last_start_time[0] = time.time()
 
             def _fofa_api_request(query_str):
                 qbase64 = base64.b64encode(query_str.encode('utf-8')).decode('utf-8')
@@ -1675,7 +1731,9 @@ class LinkOpenerApp:
 
             def _process_single_asset(asset):
                 if self.stop_fofa_batch_flag: return
-                self.root.after(0, lambda a=asset: self.log(f"\n--- 线程启动: 锁定资产 {a} ---"))
+                _stagger_thread_start()
+                if self.stop_fofa_batch_flag: return
+                self.log(f"\n--- 线程启动: 锁定资产 {asset} ---")
                 
                 asset_all_success = True 
                 asset_output_blocks = []
@@ -1684,7 +1742,7 @@ class LinkOpenerApp:
                 
                 for fp in fp_lines:
                     if self.stop_fofa_batch_flag: break
-                    self.root.after(0, lambda f=fp, a=asset: self.log(f"[{a}] 正在注入指纹: {f}"))
+                    self.log(f"[{asset}] 正在注入指纹: {fp}")
                     
                     if '""' in fp: query = fp.replace('""', f'"{clean_host}"')
                     elif '{}' in fp: query = fp.replace('{}', clean_host)
@@ -1697,7 +1755,7 @@ class LinkOpenerApp:
                             res = data.get("results", [])
                             
                             if res:
-                                self.root.after(0, lambda a=asset, raw_cnt=len(res): self.log(f"[{a}] 查到 {raw_cnt} 条原始资产，正在并发测活过滤..."))
+                                self.log(f"[{asset}] 查到 {len(res)} 条原始资产，正在并发测活过滤...")
                                 alive_res = _filter_alive_results(res)
                                 alive_cnt = len(alive_res)
                                 is_under_threshold = (threshold > 0 and alive_cnt < threshold)
@@ -1734,24 +1792,24 @@ class LinkOpenerApp:
                                         block_lines.append(item_info["link"])
                                     asset_output_blocks.append("\n".join(block_lines) + "\n")
                                     asset_saved_count += alive_cnt
-                                    self.root.after(0, lambda a=asset, r_cnt=len(res), a_cnt=alive_cnt: self.log(f"{a} 测活完成：原始 {r_cnt} 条 -> 存活 {a_cnt} 条 (已达阈值{threshold}，已填入表格并加入汇总输出)"))
+                                    self.log(f"{asset} 测活完成：原始 {len(res)} 条 -> 存活 {alive_cnt} 条 (已达阈值{threshold}，已填入表格并加入汇总输出)")
                                 else:
-                                    self.root.after(0, lambda a=asset, r_cnt=len(res), a_cnt=alive_cnt: self.log(f"{a} 测活完成：原始 {r_cnt} 条 -> 存活 {a_cnt} 条 (未达存活阈值 {threshold}，跳过入表与导出TXT)"))
+                                    self.log(f"{asset} 测活完成：原始 {len(res)} 条 -> 存活 {alive_cnt} 条 (未达存活阈值 {threshold}，跳过入表与导出TXT)")
                             else:
-                                self.root.after(0, lambda a=asset: self.log(f"{a} 查询完成，共0条记录"))
+                                self.log(f"{asset} 查询完成，共0条记录")
 
                         else:
                             err_msg = data.get("errmsg", "未知API接口错误")
-                            self.root.after(0, lambda a=asset, err=err_msg: self.log(f"[{a}] 遭FOFA拦截/报错: {err}"))
+                            self.log(f"[{asset}] 遭FOFA拦截/报错: {err_msg}")
                             if any(k in str(err_msg) for k in ["权限", "余额", "key", "Key", "-100", "401", "820031"]):
                                 asset_all_success = False
                                 break
                             
                     except requests.exceptions.RequestException as e:
-                        self.root.after(0, lambda a=asset, err=str(e): self.log(f"[{a}] 查询请求失败: {err}"))
+                        self.log(f"[{asset}] 查询请求失败: {str(e)}")
                         asset_all_success = False 
                     except Exception as e:
-                        self.root.after(0, lambda a=asset, err=str(e): self.log(f"[{a}] 查询异常: {err}"))
+                        self.log(f"[{asset}] 查询异常: {str(e)}")
                         asset_all_success = False 
 
                 if asset_output_blocks:
@@ -1763,7 +1821,7 @@ class LinkOpenerApp:
                             with open(save_path, 'w', encoding='utf-8') as sf:
                                 sf.write("".join(asset_output_blocks))
                         except Exception: pass
-                    self.root.after(0, lambda a=asset, cnt=asset_saved_count, name=save_filename, d=export_folder: self.log(f"{a}汇总保存完成，共{cnt}条存活记录，已生成{name}，保存到{d}"))
+                    self.log(f"{asset}汇总保存完成，共{asset_saved_count}条存活记录，已生成{save_filename}，保存到{export_folder}")
 
                 if not self.stop_fofa_batch_flag:
                     if asset_all_success:
@@ -1777,15 +1835,17 @@ class LinkOpenerApp:
                                     with open(asset_path, 'w', encoding='utf-8') as f_write:
                                         for cl in current_lines:
                                             f_write.write(f"{cl}\n")
-                                    self.root.after(0, lambda a=asset: self.log(f"资产 {a} 探测完毕，已安全物理抹除！"))
+                                    self.log(f"资产 {asset} 探测完毕，已安全物理抹除！")
                             except Exception:
                                 pass
                     else:
-                        self.root.after(0, lambda a=asset: self.log(f"资产 {a} 存在异常，已保留在TXT中防丢失！"))
+                        self.log(f"资产 {asset} 存在异常，已保留在TXT中防丢失！")
 
             def _process_single_fp(fp):
                 if self.stop_fofa_batch_flag: return
-                self.root.after(0, lambda q=fp: self.log(f"正在查询指纹: {q}"))
+                _stagger_thread_start()
+                if self.stop_fofa_batch_flag: return
+                self.log(f"正在查询指纹: {fp}")
                 
                 try:
                     data = _fofa_api_request(fp)
@@ -1794,7 +1854,7 @@ class LinkOpenerApp:
                         res = data.get("results", [])
                         
                         if res:
-                            self.root.after(0, lambda q=fp, raw_cnt=len(res): self.log(f"[{q}] 查到 {raw_cnt} 条原始资产，正在并发测活过滤..."))
+                            self.log(f"[{fp}] 查到 {len(res)} 条原始资产，正在并发测活过滤...")
                             alive_res = _filter_alive_results(res)
                             alive_cnt = len(alive_res)
                             is_under_threshold = (threshold > 0 and alive_cnt < threshold)
@@ -1832,27 +1892,27 @@ class LinkOpenerApp:
                                             for item_info in alive_res:
                                                 sf.write(f"{item_info['link']}\n")
                                     except Exception: pass
-                                self.root.after(0, lambda q=fp, r_cnt=len(res), a_cnt=alive_cnt, d=export_folder: self.log(f"{q} 测活完成：原始 {r_cnt} 条 -> 存活 {a_cnt} 条，已置顶填入表格并保存到 {d}"))
+                                self.log(f"{fp} 测活完成：原始 {len(res)} 条 -> 存活 {alive_cnt} 条，已置顶填入表格并保存到 {export_folder}")
                             else:
-                                self.root.after(0, lambda q=fp, r_cnt=len(res), a_cnt=alive_cnt: self.log(f"{q} 测活完成：原始 {r_cnt} 条 -> 存活 {a_cnt} 条 (未达存活阈值 {threshold}，跳过入表与保存TXT)"))
+                                self.log(f"{fp} 测活完成：原始 {len(res)} 条 -> 存活 {alive_cnt} 条 (未达存活阈值 {threshold}，跳过入表与保存TXT)")
                         else:
-                            self.root.after(0, lambda q=fp: self.log(f"{q} 查询完成，共0条记录"))
+                            self.log(f"{fp} 查询完成，共0条记录")
                     else:
                         err_msg = data.get("errmsg", "未知API接口错误")
-                        self.root.after(0, lambda q=fp, err=err_msg: self.log(f"[{q}] 获取失败，原因: {err}"))
+                        self.log(f"[{fp}] 获取失败，原因: {err_msg}")
                         
                 except requests.exceptions.RequestException as e:
-                    self.root.after(0, lambda q=fp, err=str(e): self.log(f"[{q}] 查询请求失败: {err}"))
+                    self.log(f"[{fp}] 查询请求失败: {str(e)}")
                 except Exception as e:
-                    self.root.after(0, lambda q=fp, err=str(e): self.log(f"[{q}] 查询异常: {err}"))
+                    self.log(f"[{fp}] 查询异常: {str(e)}")
 
             if asset_lines:
-                self.root.after(0, lambda: self.log(f"启动并发引擎队列 ({fofa_threads} 线程)，开始资产+指纹交叉探测并自动测活..."))
+                self.log(f"启动并发引擎队列 ({fofa_threads} 线程)，开始资产+指纹交叉探测并自动测活...")
                 with concurrent.futures.ThreadPoolExecutor(max_workers=fofa_threads) as executor:
                     futures = [executor.submit(_process_single_asset, a) for a in asset_lines]
                     concurrent.futures.wait(futures) 
             else:
-                self.root.after(0, lambda: self.log(f"启动并发引擎队列 ({fofa_threads} 线程)，开始批量采集指纹TXT并自动测活！"))
+                self.log(f"启动并发引擎队列 ({fofa_threads} 线程)，开始批量采集指纹TXT并自动测活！")
                 with concurrent.futures.ThreadPoolExecutor(max_workers=fofa_threads) as executor:
                     futures = [executor.submit(_process_single_fp, fp) for fp in fp_lines]
                     concurrent.futures.wait(futures)
@@ -1863,7 +1923,7 @@ class LinkOpenerApp:
                     self.log("所有正在执行的资产均已处理完毕并断点保存，任务已安全终止！")
                 else:
                     self.log("批量引擎任务彻底执行完毕！")
-                self.btn_fofa_batch.config(state="normal", text="FOFA查询")
+                self.btn_fofa_batch.config(state="normal", text="批量查询")
                 self.btn_stop_batch.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK, text="查询完当前资产停止")
                 # 若按下了「仅保留IP」按钮，批量指纹查询完成后自动开始动态删除非IP资产
                 if self.only_ip_mode:
@@ -1913,11 +1973,11 @@ class LinkOpenerApp:
                     self.root.after(0, _gui_insert_single)
                 else:
                     err_msg = data.get("errmsg", "未知接口错误")
-                    self.root.after(0, lambda err=err_msg: self.log(f"获取失败，原因: {err}"))
+                    self.log(f"获取失败，原因: {err_msg}")
             except Exception as e:
-                self.root.after(0, lambda err=str(e): self.log(f"请求崩溃或网络错误: {err}"))
+                self.log(f"请求崩溃或网络错误: {str(e)}")
             finally:
-                self.root.after(0, lambda: self.btn_fofa_search.config(state="normal", text="开始拉取数据"))
+                self.root.after(0, lambda: self.btn_fofa_search.config(state="normal", text="单次查询"))
         
         threading.Thread(target=_task, daemon=True).start()
 
@@ -1996,12 +2056,12 @@ class LinkOpenerApp:
             self.root.after(0, lambda: self.btn_stop.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK))
             
             if not self.stop_scan:
-                self.root.after(0, lambda: self.log("极速测活完成！失效死链已动态剔除。"))
+                self.log("极速测活完成！失效死链已动态剔除。")
                 self.root.after(0, self.play_finish_sound)
                 if self.var_auto_shutdown.get():
                     self.root.after(0, self.auto_save_and_shutdown)
             else:
-                self.root.after(0, lambda: self.log("测活已被用户手动终止。"))
+                self.log("测活已被用户手动终止。")
             
         threading.Thread(target=_scan, daemon=True).start()
 
