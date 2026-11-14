@@ -1529,6 +1529,24 @@ class LinkOpenerApp:
         try: fofa_threads = max(1, int(self.entry_fofa_threads.get().strip()))
         except: fofa_threads = 1
         
+        # 读取「2. 资产管理与测活」选项卡中的并发测活参数
+        try: check_threads = max(1, int(self.entry_threads.get().strip()))
+        except: check_threads = 200
+        try: timeout_val = float(self.entry_timeout.get().strip())
+        except: timeout_val = 3.0
+        target_codes = [c.strip() for c in self.entry_status.get().strip().replace('，', ',').split(',')]
+        if not target_codes or target_codes == ['']:
+            target_codes = ["200"]
+
+        enh_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
+
         export_folder = self.entry_export_dir.get().strip()
         if not export_folder or not os.path.isdir(export_folder):
             export_folder = os.path.join(os.getcwd(), "FOFA_自动分拣结果")
@@ -1540,7 +1558,7 @@ class LinkOpenerApp:
         self.stop_fofa_batch_flag = False
         self.btn_fofa_batch.config(state="disabled", text="批量查询中...")
         self.btn_stop_batch.config(state="normal", bg=Y2K_MAROON, fg="#FFFFFF", text="查询完当前资产停止")
-        self.log(f"正在准备启动 FOFA 多线程涡轮并发引擎 (当前设置 {fofa_threads} 线程)...")
+        self.log(f"正在准备启动 FOFA 多线程涡轮并发引擎 (查询 {fofa_threads} 线程 | 自动测活 {check_threads} 线程 | 存活状态码 {target_codes})...")
         
         def _task():
             try:
@@ -1600,6 +1618,54 @@ class LinkOpenerApp:
                     return data
                 return data
 
+            def _filter_alive_results(raw_res):
+                """并发测活：仅保留状态码符合 target_codes 的存活资产"""
+                if not raw_res:
+                    return []
+                alive_list = []
+
+                def _probe_one(item_data):
+                    host = str(item_data[0]) if len(item_data) > 0 else ""
+                    if not host:
+                        return None
+                    link = host if host.startswith("http") else "http://" + host
+                    country = str(item_data[3]) if len(item_data) > 3 else "-"
+                    title = str(item_data[4]) if len(item_data) > 4 else "-"
+                    product = str(item_data[5]) if len(item_data) > 5 else "-"
+                    icp = str(item_data[6]) if len(item_data) > 6 else "-"
+
+                    code, length = "Error", "-"
+                    for _ in range(2):
+                        try:
+                            r = requests.get(link, headers=enh_headers, timeout=timeout_val, verify=False, allow_redirects=True)
+                            code, length = str(r.status_code), str(len(r.content))
+                            break
+                        except requests.exceptions.RequestException as e:
+                            if hasattr(e, 'response') and e.response is not None:
+                                code = str(e.response.status_code)
+                                break
+                        except Exception:
+                            pass
+
+                    if code in target_codes:
+                        return {
+                            "link": link,
+                            "country": country,
+                            "icp": icp,
+                            "title": title,
+                            "length": length,
+                            "code": code,
+                            "product": product
+                        }
+                    return None
+
+                workers = min(check_threads, max(1, len(raw_res)))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                    for res_item in ex.map(_probe_one, raw_res):
+                        if res_item is not None:
+                            alive_list.append(res_item)
+                return alive_list
+
             def _clean_asset_host(raw_asset):
                 clean = raw_asset.strip()
                 if "://" in clean:
@@ -1631,44 +1697,48 @@ class LinkOpenerApp:
                             res = data.get("results", [])
                             
                             if res:
-                                is_under_threshold = (threshold > 0 and len(res) < threshold)
-                                
-                                def _gui_insert_async(data_list=res):
-                                    for item_data in data_list:
-                                        host = str(item_data[0]) if len(item_data) > 0 else ""
-                                        country = str(item_data[3]) if len(item_data) > 3 else "-"
-                                        title = str(item_data[4]) if len(item_data) > 4 else "-"
-                                        product = str(item_data[5]) if len(item_data) > 5 else "-"
-                                        icp = str(item_data[6]) if len(item_data) > 6 else "-"
-                                        
-                                        link = host if host.startswith("http") else "http://" + host
-                                        idx = len(self.tree.get_children()) + 1
-                                        tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
-                                        v = ("☐", idx, country, icp, title, link, "-", "待测", product)
-                                        self.tree.insert("", 0, values=v, tags=(tag,))
-                                    self.tree.yview_moveto(0)
-                                    self.update_range_end()
-                                self.root.after(0, _gui_insert_async)
-                        
-                                if not is_under_threshold:
+                                self.root.after(0, lambda a=asset, raw_cnt=len(res): self.log(f"[{a}] 查到 {raw_cnt} 条原始资产，正在并发测活过滤..."))
+                                alive_res = _filter_alive_results(res)
+                                alive_cnt = len(alive_res)
+                                is_under_threshold = (threshold > 0 and alive_cnt < threshold)
+
+                                if alive_cnt > 0 and not is_under_threshold:
+                                    def _gui_insert_async(data_list=alive_res):
+                                        for item_info in data_list:
+                                            idx = len(self.tree.get_children()) + 1
+                                            tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
+                                            v = (
+                                                "☐",
+                                                idx,
+                                                item_info["country"],
+                                                item_info["icp"],
+                                                item_info["title"],
+                                                item_info["link"],
+                                                item_info["length"],
+                                                item_info["code"],
+                                                item_info["product"]
+                                            )
+                                            self.tree.insert("", 0, values=v, tags=(tag, 'alive'))
+                                        self.tree.yview_moveto(0)
+                                        self.update_range_end()
+                                    self.root.after(0, _gui_insert_async)
+
                                     block_lines = [
                                         f"\n{'='*40}",
                                         f"[+] 使用指纹: {fp}",
                                         f"[-] 实际执行: {query}",
-                                        f"[-] 共查到 {len(res)} 个结果",
+                                        f"[-] 原始结果: {len(res)} 个 | 测活存活: {alive_cnt} 个",
                                         f"{'='*40}"
                                     ]
-                                    for item_data in res:
-                                        host = str(item_data[0]) if len(item_data) > 0 else ""
-                                        link = host if host.startswith("http") else "http://" + host
-                                        block_lines.append(link)
+                                    for item_info in alive_res:
+                                        block_lines.append(item_info["link"])
                                     asset_output_blocks.append("\n".join(block_lines) + "\n")
-                                    asset_saved_count += len(res)
-                                    self.root.after(0, lambda a=asset, cnt=len(res): self.log(f"{a}查询完成，共{cnt}条记录，已置顶加入表格与汇总输出"))
+                                    asset_saved_count += alive_cnt
+                                    self.root.after(0, lambda a=asset, r_cnt=len(res), a_cnt=alive_cnt: self.log(f"{a} 测活完成：原始 {r_cnt} 条 -> 存活 {a_cnt} 条 (已达阈值{threshold}，已填入表格并加入汇总输出)"))
                                 else:
-                                    self.root.after(0, lambda a=asset, cnt=len(res): self.log(f"{a}查询完成，共{cnt}条记录 (已置顶显示至表格；未达阈值{threshold}，跳过导出TXT)"))
+                                    self.root.after(0, lambda a=asset, r_cnt=len(res), a_cnt=alive_cnt: self.log(f"{a} 测活完成：原始 {r_cnt} 条 -> 存活 {a_cnt} 条 (未达存活阈值 {threshold}，跳过入表与导出TXT)"))
                             else:
-                                self.root.after(0, lambda a=asset: self.log(f"{a}查询完成，共0条记录"))
+                                self.root.after(0, lambda a=asset: self.log(f"{a} 查询完成，共0条记录"))
 
                         else:
                             err_msg = data.get("errmsg", "未知API接口错误")
@@ -1693,7 +1763,7 @@ class LinkOpenerApp:
                             with open(save_path, 'w', encoding='utf-8') as sf:
                                 sf.write("".join(asset_output_blocks))
                         except Exception: pass
-                    self.root.after(0, lambda a=asset, cnt=asset_saved_count, name=save_filename, d=export_folder: self.log(f"{a}汇总保存完成，共{cnt}条记录，已生成{name}，保存到{d}"))
+                    self.root.after(0, lambda a=asset, cnt=asset_saved_count, name=save_filename, d=export_folder: self.log(f"{a}汇总保存完成，共{cnt}条存活记录，已生成{name}，保存到{d}"))
 
                 if not self.stop_fofa_batch_flag:
                     if asset_all_success:
@@ -1724,43 +1794,47 @@ class LinkOpenerApp:
                         res = data.get("results", [])
                         
                         if res:
-                            is_under_threshold = (threshold > 0 and len(res) < threshold)
-                            
-                            def _gui_insert_async(data_list=res):
-                                for item_data in data_list:
-                                    host = str(item_data[0]) if len(item_data) > 0 else ""
-                                    country = str(item_data[3]) if len(item_data) > 3 else "-"
-                                    title = str(item_data[4]) if len(item_data) > 4 else "-"
-                                    product = str(item_data[5]) if len(item_data) > 5 else "-"
-                                    icp = str(item_data[6]) if len(item_data) > 6 else "-"
-                                    
-                                    link = host if host.startswith("http") else "http://" + host
-                                    idx = len(self.tree.get_children()) + 1
-                                    tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
-                                    v = ("☐", idx, country, icp, title, link, "-", "待测", product)
-                                    self.tree.insert("", 0, values=v, tags=(tag,))
-                                self.tree.yview_moveto(0)
-                                self.update_range_end()
-                            self.root.after(0, _gui_insert_async)
-                
-                            if not is_under_threshold:
+                            self.root.after(0, lambda q=fp, raw_cnt=len(res): self.log(f"[{q}] 查到 {raw_cnt} 条原始资产，正在并发测活过滤..."))
+                            alive_res = _filter_alive_results(res)
+                            alive_cnt = len(alive_res)
+                            is_under_threshold = (threshold > 0 and alive_cnt < threshold)
+
+                            if alive_cnt > 0 and not is_under_threshold:
+                                def _gui_insert_async(data_list=alive_res):
+                                    for item_info in data_list:
+                                        idx = len(self.tree.get_children()) + 1
+                                        tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
+                                        v = (
+                                            "☐",
+                                            idx,
+                                            item_info["country"],
+                                            item_info["icp"],
+                                            item_info["title"],
+                                            item_info["link"],
+                                            item_info["length"],
+                                            item_info["code"],
+                                            item_info["product"]
+                                        )
+                                        self.tree.insert("", 0, values=v, tags=(tag, 'alive'))
+                                    self.tree.yview_moveto(0)
+                                    self.update_range_end()
+                                self.root.after(0, _gui_insert_async)
+
                                 safe_fp_name = re.sub(r'[\\/:*?"<>|]', '_', fp)[:50] 
-                                save_path = os.path.join(export_folder, f"指纹查询_{safe_fp_name}_{len(res)}.txt")
+                                save_path = os.path.join(export_folder, f"指纹查询_{safe_fp_name}_{alive_cnt}.txt")
                                 with file_lock:
                                     try:
                                         with open(save_path, 'w', encoding='utf-8') as sf:
                                             sf.write(f"\n{'='*40}\n")
                                             sf.write(f"[+] 查询指纹: {fp}\n")
-                                            sf.write(f"[-] 共查到 {len(res)} 个结果\n")
+                                            sf.write(f"[-] 原始结果: {len(res)} 个 | 测活存活: {alive_cnt} 个\n")
                                             sf.write(f"{'='*40}\n")
-                                            for item_data in res:
-                                                host = str(item_data[0]) if len(item_data) > 0 else ""
-                                                link = host if host.startswith("http") else "http://" + host
-                                                sf.write(f"{link}\n")
+                                            for item_info in alive_res:
+                                                sf.write(f"{item_info['link']}\n")
                                     except Exception: pass
-                                self.root.after(0, lambda q=fp, cnt=len(res), d=export_folder: self.log(f"{q} 查询完成，共{cnt}条记录，已置顶导入表格并保存到{d}"))
+                                self.root.after(0, lambda q=fp, r_cnt=len(res), a_cnt=alive_cnt, d=export_folder: self.log(f"{q} 测活完成：原始 {r_cnt} 条 -> 存活 {a_cnt} 条，已置顶填入表格并保存到 {d}"))
                             else:
-                                self.root.after(0, lambda q=fp, cnt=len(res): self.log(f"{q} 查询完成，共{cnt}条记录 (已置顶导入表格；未达阈值{threshold}，跳过保存TXT)"))
+                                self.root.after(0, lambda q=fp, r_cnt=len(res), a_cnt=alive_cnt: self.log(f"{q} 测活完成：原始 {r_cnt} 条 -> 存活 {a_cnt} 条 (未达存活阈值 {threshold}，跳过入表与保存TXT)"))
                         else:
                             self.root.after(0, lambda q=fp: self.log(f"{q} 查询完成，共0条记录"))
                     else:
@@ -1773,12 +1847,12 @@ class LinkOpenerApp:
                     self.root.after(0, lambda q=fp, err=str(e): self.log(f"[{q}] 查询异常: {err}"))
 
             if asset_lines:
-                self.root.after(0, lambda: self.log(f"启动并发引擎队列 ({fofa_threads} 线程)，开始资产+指纹交叉探测..."))
+                self.root.after(0, lambda: self.log(f"启动并发引擎队列 ({fofa_threads} 线程)，开始资产+指纹交叉探测并自动测活..."))
                 with concurrent.futures.ThreadPoolExecutor(max_workers=fofa_threads) as executor:
                     futures = [executor.submit(_process_single_asset, a) for a in asset_lines]
                     concurrent.futures.wait(futures) 
             else:
-                self.root.after(0, lambda: self.log(f"启动并发引擎队列 ({fofa_threads} 线程)，开始批量采集指纹TXT！"))
+                self.root.after(0, lambda: self.log(f"启动并发引擎队列 ({fofa_threads} 线程)，开始批量采集指纹TXT并自动测活！"))
                 with concurrent.futures.ThreadPoolExecutor(max_workers=fofa_threads) as executor:
                     futures = [executor.submit(_process_single_fp, fp) for fp in fp_lines]
                     concurrent.futures.wait(futures)
@@ -1943,6 +2017,4 @@ if __name__ == "__main__":
 
     app = LinkOpenerApp(main_root, global_config)
         
-    main_root.mainloop()
-    main_root.mainloop()
     main_root.mainloop()
