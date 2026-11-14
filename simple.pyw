@@ -927,6 +927,7 @@ class LinkOpenerApp:
         self.entry_fofa_txt_path.insert(0, self.config_data.get("fofa_txt_path", ""))
         self.entry_fofa_txt_path.grid(row=6, column=1, pady=4, padx=5, ipady=2, sticky="w")
         tk.Button(f, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=self.select_fofa_txt_file).grid(row=6, column=2, padx=5, sticky="w")
+        tk.Button(f, text="打开", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=lambda: self.open_txt_from_entry(self.entry_fofa_txt_path)).grid(row=6, column=3, padx=5, sticky="w")
         self.enable_drag_drop(self.entry_fofa_txt_path, 'txt')
 
         tk.Label(f, text="资产TXT路径:", bg=Y2K_BG, font=Y2K_FONT).grid(row=7, column=0, sticky="w")
@@ -934,7 +935,7 @@ class LinkOpenerApp:
         self.entry_fofa_asset_txt.insert(0, self.config_data.get("fofa_asset_txt", ""))
         self.entry_fofa_asset_txt.grid(row=7, column=1, pady=4, padx=5, ipady=2, sticky="w")
         tk.Button(f, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=self.select_fofa_asset_txt).grid(row=7, column=2, padx=5, sticky="w")
-        tk.Label(f, text="(支持异常熔断保护与安全断点续传)", bg=Y2K_BG, font=Y2K_FONT, fg="#404040").grid(row=7, column=3, sticky="w")
+        tk.Button(f, text="打开", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=lambda: self.open_txt_from_entry(self.entry_fofa_asset_txt)).grid(row=7, column=3, padx=5, sticky="w")
         self.enable_drag_drop(self.entry_fofa_asset_txt, 'txt')
 
         tk.Label(f, text="阈值/并发:", bg=Y2K_BG, font=Y2K_FONT).grid(row=8, column=0, sticky="w")
@@ -957,6 +958,21 @@ class LinkOpenerApp:
         self.btn_fofa_batch.pack(side=tk.LEFT)
         self.btn_stop_batch = tk.Button(f_btn_batch, text="查询完当前资产停止", bg=Y2K_FACE, fg=Y2K_DARK, disabledforeground=Y2K_DARK, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=14, pady=2, state="disabled", command=self.stop_fofa_batch)
         self.btn_stop_batch.pack(side=tk.LEFT, padx=10)
+
+    def open_txt_from_entry(self, entry_widget):
+        path = entry_widget.get().strip()
+        if not path or not os.path.isfile(path):
+            messagebox.showwarning("提示", "文件不存在或路径为空，请先选择有效的 TXT 文件！")
+            return
+        try:
+            if os.name == 'nt':
+                os.startfile(path)
+            else:
+                subprocess.Popen(['xdg-open', path])
+            self.log(f"已打开文件: {os.path.basename(path)}")
+        except Exception as e:
+            self.log(f"打开文件失败: {str(e)}")
+            messagebox.showerror("打开失败", f"无法打开该文件：\n{e}")
 
     def stop_fofa_batch(self):
         self.stop_fofa_batch_flag = True
@@ -1927,4 +1943,6 @@ if __name__ == "__main__":
 
     app = LinkOpenerApp(main_root, global_config)
         
+    main_root.mainloop()
+    main_root.mainloop()
     main_root.mainloop()
