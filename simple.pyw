@@ -12,6 +12,9 @@ import re
 import csv
 import subprocess
 import base64
+import codecs
+import hashlib
+import struct
 import ipaddress
 from collections import deque
 
@@ -21,6 +24,12 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from io import StringIO
+
+try:
+    import mmh3 as _ext_mmh3
+    HAS_MMH3 = True
+except ImportError:
+    HAS_MMH3 = False
 
 try:
     import psutil
@@ -77,6 +86,61 @@ BREATH_COLORS = [
     "#00E0E0", "#00C8C8", "#00B0B0", "#009898", "#008080",
     "#006898", "#005090", "#003888"
 ]
+
+
+def murmurhash3_32(data: bytes, seed: int = 0) -> int:
+    """内置纯 Python 32位有符号 MurmurHash3 实现，与 mmh3.hash() 结果完全一致"""
+    if HAS_MMH3:
+        return _ext_mmh3.hash(data, seed=seed, signed=True)
+
+    c1 = 0xcc9e2d51
+    c2 = 0x1b873593
+    length = len(data)
+    h1 = seed & 0xFFFFFFFF
+    rounded_end = length & ~0x3
+
+    for i in range(0, rounded_end, 4):
+        k1 = struct.unpack_from("<I", data, i)[0]
+        k1 = (k1 * c1) & 0xFFFFFFFF
+        k1 = ((k1 << 15) | (k1 >> 17)) & 0xFFFFFFFF
+        k1 = (k1 * c2) & 0xFFFFFFFF
+
+        h1 ^= k1
+        h1 = ((h1 << 13) | (h1 >> 19)) & 0xFFFFFFFF
+        h1 = (h1 * 5 + 0xe6546b64) & 0xFFFFFFFF
+
+    k1 = 0
+    tail_len = length & 3
+    if tail_len == 3:
+        k1 ^= data[rounded_end + 2] << 16
+    if tail_len >= 2:
+        k1 ^= data[rounded_end + 1] << 8
+    if tail_len >= 1:
+        k1 ^= data[rounded_end]
+        k1 = (k1 * c1) & 0xFFFFFFFF
+        k1 = ((k1 << 15) | (k1 >> 17)) & 0xFFFFFFFF
+        k1 = (k1 * c2) & 0xFFFFFFFF
+        h1 ^= k1
+
+    h1 ^= length
+    h1 ^= (h1 >> 16)
+    h1 = (h1 * 0x85ebca6b) & 0xFFFFFFFF
+    h1 ^= (h1 >> 13)
+    h1 = (h1 * 0xc2b2ae35) & 0xFFFFFFFF
+    h1 ^= (h1 >> 16)
+
+    if h1 & 0x80000000:
+        return h1 - 0x100000000
+    return h1
+
+
+def calc_fofa_icon_hash(raw_bytes: bytes):
+    """根据图标二进制数据计算 FOFA 标准 MurmurHash3 icon_hash 与 MD5"""
+    b64_data = codecs.encode(raw_bytes, "base64")
+    mmh3_val = murmurhash3_32(b64_data)
+    md5_val = hashlib.md5(raw_bytes).hexdigest()
+    return mmh3_val, md5_val
+
 
 def load_global_config():
     if os.path.exists(CONFIG_FILE):
@@ -260,6 +324,14 @@ class LinkOpenerApp:
                 self.log(f"成功拖入并识别音频文件: {os.path.basename(path)}")
             else:
                 messagebox.showwarning("格式错误", "拒绝载入！\n\n请拖入.wav格式的音频文件。")
+
+        elif expected_type == 'icon':
+            if os.path.isfile(path) and path.lower().endswith(('.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp')):
+                widget.delete(0, tk.END)
+                widget.insert(0, path)
+                self.calculate_and_fill_icon_hash()
+            else:
+                messagebox.showwarning("格式错误", "请拖入有效的图标文件（如 .ico / .png / .jpg）！")
 
     def import_data_to_table_smart(self, path):
         try:
@@ -899,54 +971,67 @@ class LinkOpenerApp:
             self.log(f"截断处理失败: {str(e)}")
 
     def setup_fofa_tab(self):
-        f = tk.Frame(self.tab_fofa, bg=Y2K_BG, padx=12, pady=10)
+        f = tk.Frame(self.tab_fofa, bg=Y2K_BG, padx=12, pady=8)
         f.pack(fill=tk.BOTH, expand=True)
         
-        lbl_single = tk.Label(f, text="【单条语法查询】", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_NAVY)
-        lbl_single.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        lbl_single = tk.Label(f, text="【单条语法查询 & 图标 Hash 转换】", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_NAVY)
+        lbl_single.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 3))
 
         tk.Label(f, text="FOFA Key:", bg=Y2K_BG, font=Y2K_FONT).grid(row=1, column=0, sticky="w")
-        self.entry_fofa_key = tk.Entry(f, width=40, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
-        self.entry_fofa_key.insert(0, self.config_data.get("fofa_key",""))
-        self.entry_fofa_key.grid(row=1, column=1, pady=4, padx=5, ipady=2, sticky="w")
+        self.entry_fofa_key = tk.Entry(f, width=38, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        self.entry_fofa_key.insert(0, self.config_data.get("fofa_key", ""))
+        self.entry_fofa_key.grid(row=1, column=1, pady=3, padx=5, ipady=2, sticky="w")
+
+        tk.Label(f, text="获取数量:", bg=Y2K_BG, font=Y2K_FONT).grid(row=1, column=2, sticky="e", padx=4)
+        self.entry_fofa_size = tk.Entry(f, width=8, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        self.entry_fofa_size.insert(0, self.config_data.get("fofa_size", "100"))
+        self.entry_fofa_size.grid(row=1, column=3, pady=3, padx=4, ipady=2, sticky="w")
 
         tk.Label(f, text="查询语法:", bg=Y2K_BG, font=Y2K_FONT).grid(row=2, column=0, sticky="w")
-        self.entry_fofa_query = tk.Entry(f, width=40, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
-        self.entry_fofa_query.insert(0, self.config_data.get("fofa_query",""))
-        self.entry_fofa_query.grid(row=2, column=1, sticky="w", pady=4, padx=5, ipady=2)
+        self.entry_fofa_query = tk.Entry(f, width=38, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        self.entry_fofa_query.insert(0, self.config_data.get("fofa_query", ""))
+        self.entry_fofa_query.grid(row=2, column=1, sticky="w", pady=3, padx=5, ipady=2)
 
-        tk.Label(f, text="获取数量:", bg=Y2K_BG, font=Y2K_FONT).grid(row=2, column=2, sticky="e", padx=5)
-        self.entry_fofa_size = tk.Entry(f, width=8, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
-        self.entry_fofa_size.insert(0, self.config_data.get("fofa_size", "100"))
-        self.entry_fofa_size.grid(row=2, column=3, pady=4, padx=5, ipady=2)
+        self.btn_fofa_search = tk.Button(f, text="单次查询", bg=Y2K_NAVY, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=16, pady=1, cursor="hand2", command=self.start_fofa_search)
+        self.btn_fofa_search.grid(row=2, column=2, columnspan=2, pady=3, padx=4, sticky="w")
 
-        self.btn_fofa_search = tk.Button(f, text="单次查询", bg=Y2K_NAVY, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=18, pady=2, command=self.start_fofa_search)
-        self.btn_fofa_search.grid(row=3, column=1, pady=8, sticky="w")
+        # 新增：图标 icon_hash 计算栏（支持本地 .ico/.png 拖入、浏览选择、或输入目标 URL 自动抓取）
+        tk.Label(f, text="图标Hash:", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_TEAL).grid(row=3, column=0, sticky="w")
+        self.entry_fofa_icon = tk.Entry(f, width=38, bg=Y2K_CREAM, fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        self.entry_fofa_icon.insert(0, self.config_data.get("fofa_icon_source", ""))
+        self.entry_fofa_icon.grid(row=3, column=1, sticky="w", pady=3, padx=5, ipady=2)
+        self.enable_drag_drop(self.entry_fofa_icon, 'icon')
 
-        tk.Frame(f, bg=Y2K_DARK, height=2, bd=1, relief=tk.SUNKEN).grid(row=4, column=0, columnspan=4, sticky="ew", pady=10)
+        f_icon_btns = tk.Frame(f, bg=Y2K_BG)
+        f_icon_btns.grid(row=3, column=2, columnspan=2, sticky="w", padx=4, pady=3)
+        tk.Button(f_icon_btns, text="浏览图标", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, cursor="hand2", command=self.select_icon_file_for_hash).pack(side=tk.LEFT, padx=(0, 4))
+        self.btn_calc_icon = tk.Button(f_icon_btns, text="提取Hash填入", bg=Y2K_TEAL, fg="#FFFF00", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=8, cursor="hand2", command=self.calculate_and_fill_icon_hash)
+        self.btn_calc_icon.pack(side=tk.LEFT)
+
+        tk.Frame(f, bg=Y2K_DARK, height=2, bd=1, relief=tk.SUNKEN).grid(row=4, column=0, columnspan=4, sticky="ew", pady=7)
 
         lbl_batch = tk.Label(f, text="【批量指纹查询 (涡轮并发版)】", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_MAROON)
-        lbl_batch.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        lbl_batch.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 3))
 
         tk.Label(f, text="指纹TXT路径:", bg=Y2K_BG, font=Y2K_FONT).grid(row=6, column=0, sticky="w")
-        self.entry_fofa_txt_path = tk.Entry(f, width=40, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        self.entry_fofa_txt_path = tk.Entry(f, width=38, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_fofa_txt_path.insert(0, self.config_data.get("fofa_txt_path", ""))
-        self.entry_fofa_txt_path.grid(row=6, column=1, pady=4, padx=5, ipady=2, sticky="w")
-        tk.Button(f, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=self.select_fofa_txt_file).grid(row=6, column=2, padx=5, sticky="w")
-        tk.Button(f, text="打开", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=lambda: self.open_txt_from_entry(self.entry_fofa_txt_path)).grid(row=6, column=3, padx=5, sticky="w")
+        self.entry_fofa_txt_path.grid(row=6, column=1, pady=3, padx=5, ipady=2, sticky="w")
+        tk.Button(f, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=self.select_fofa_txt_file).grid(row=6, column=2, padx=4, sticky="w")
+        tk.Button(f, text="打开", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=lambda: self.open_txt_from_entry(self.entry_fofa_txt_path)).grid(row=6, column=3, padx=4, sticky="w")
         self.enable_drag_drop(self.entry_fofa_txt_path, 'txt')
 
         tk.Label(f, text="资产TXT路径:", bg=Y2K_BG, font=Y2K_FONT).grid(row=7, column=0, sticky="w")
-        self.entry_fofa_asset_txt = tk.Entry(f, width=40, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        self.entry_fofa_asset_txt = tk.Entry(f, width=38, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_fofa_asset_txt.insert(0, self.config_data.get("fofa_asset_txt", ""))
-        self.entry_fofa_asset_txt.grid(row=7, column=1, pady=4, padx=5, ipady=2, sticky="w")
-        tk.Button(f, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=self.select_fofa_asset_txt).grid(row=7, column=2, padx=5, sticky="w")
-        tk.Button(f, text="打开", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=lambda: self.open_txt_from_entry(self.entry_fofa_asset_txt)).grid(row=7, column=3, padx=5, sticky="w")
+        self.entry_fofa_asset_txt.grid(row=7, column=1, pady=3, padx=5, ipady=2, sticky="w")
+        tk.Button(f, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=self.select_fofa_asset_txt).grid(row=7, column=2, padx=4, sticky="w")
+        tk.Button(f, text="打开", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=lambda: self.open_txt_from_entry(self.entry_fofa_asset_txt)).grid(row=7, column=3, padx=4, sticky="w")
         self.enable_drag_drop(self.entry_fofa_asset_txt, 'txt')
 
         tk.Label(f, text="阈值/并发:", bg=Y2K_BG, font=Y2K_FONT).grid(row=8, column=0, sticky="w")
         f_thres = tk.Frame(f, bg=Y2K_BG)
-        f_thres.grid(row=8, column=1, columnspan=2, sticky="w", pady=4, padx=5)
+        f_thres.grid(row=8, column=1, columnspan=3, sticky="w", pady=3, padx=5)
         
         tk.Label(f_thres, text="淘汰阈值", bg=Y2K_BG, font=Y2K_FONT).pack(side=tk.LEFT)
         self.entry_min_count = tk.Entry(f_thres, width=5, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
@@ -959,11 +1044,116 @@ class LinkOpenerApp:
         self.entry_fofa_threads.pack(side=tk.LEFT, ipady=2, padx=(4, 10))
 
         f_btn_batch = tk.Frame(f, bg=Y2K_BG)
-        f_btn_batch.grid(row=9, column=1, columnspan=3, pady=8, sticky="w")
-        self.btn_fofa_batch = tk.Button(f_btn_batch, text="批量查询", bg=Y2K_OLIVE, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=18, pady=2, command=self.batch_fofa_from_txt)
+        f_btn_batch.grid(row=9, column=1, columnspan=3, pady=6, sticky="w")
+        self.btn_fofa_batch = tk.Button(f_btn_batch, text="批量查询", bg=Y2K_OLIVE, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=18, pady=2, cursor="hand2", command=self.batch_fofa_from_txt)
         self.btn_fofa_batch.pack(side=tk.LEFT)
         self.btn_stop_batch = tk.Button(f_btn_batch, text="查询完当前资产停止", bg=Y2K_FACE, fg=Y2K_DARK, disabledforeground=Y2K_DARK, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=14, pady=2, state="disabled", command=self.stop_fofa_batch)
         self.btn_stop_batch.pack(side=tk.LEFT, padx=10)
+
+    def select_icon_file_for_hash(self):
+        path = filedialog.askopenfilename(
+            title="选择图标文件计算 icon_hash",
+            filetypes=[("图标与图片文件", "*.ico *.png *.jpg *.jpeg *.gif *.svg *.bmp"), ("所有文件", "*.*")]
+        )
+        if path:
+            self.entry_fofa_icon.delete(0, tk.END)
+            self.entry_fofa_icon.insert(0, path)
+            self.calculate_and_fill_icon_hash()
+
+    def calculate_and_fill_icon_hash(self):
+        source = self.entry_fofa_icon.get().strip()
+        if not source:
+            messagebox.showwarning("提示", "请先拖入/选择本地 .ico 图标文件，或在输入框中填入目标 URL！")
+            return
+
+        self.config_data["fofa_icon_source"] = source
+        save_global_config(self.config_data)
+
+        # 情况 1：本地图标文件直接读取计算
+        if os.path.isfile(source):
+            try:
+                with open(source, "rb") as f:
+                    raw_bytes = f.read()
+                if not raw_bytes:
+                    messagebox.showwarning("提示", "所选图标文件内容为空！")
+                    return
+                mmh3_val, md5_val = calc_fofa_icon_hash(raw_bytes)
+                query_syntax = f'icon_hash="{mmh3_val}"'
+                self.entry_fofa_query.delete(0, tk.END)
+                self.entry_fofa_query.insert(0, query_syntax)
+                self.root.clipboard_clear()
+                self.root.clipboard_append(query_syntax)
+                self.log(f"本地图标计算成功 [{os.path.basename(source)}] -> {query_syntax} | MD5: {md5_val} (已填入语法框并复制)")
+            except Exception as e:
+                self.log(f"读取本地图标计算失败: {str(e)}")
+                messagebox.showerror("计算错误", f"无法读取并计算该图标文件：\n{e}")
+            return
+
+        # 情况 2：远程 URL 自动抓取图标并计算
+        self.btn_calc_icon.config(state="disabled", text="抓取计算中...")
+        target_url = source if "://" in source else "http://" + source
+        self.log(f"正在从远程地址探测并提取图标: {target_url}")
+
+        def _fetch_icon_task():
+            try:
+                req_headers = {
+                    'User-Agent': HEADERS['User-Agent'],
+                    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+                }
+                r = requests.get(target_url, headers=req_headers, timeout=10, verify=False)
+                content_type = r.headers.get("Content-Type", "").lower()
+                parsed_path = urllib.parse.urlparse(target_url).path.lower()
+
+                icon_bytes = None
+                final_icon_url = target_url
+
+                # 若直接指向图标文件或响应为图片流
+                if any(parsed_path.endswith(ext) for ext in ('.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp')) or "image/" in content_type or "octet-stream" in content_type:
+                    if r.status_code == 200 and r.content:
+                        icon_bytes = r.content
+                else:
+                    # 从 HTML 源码中提取 <link rel="...icon..." href="...">
+                    html_text = r.text or ""
+                    icon_href = None
+                    for link_tag in re.findall(r'<link[^>]+>', html_text, re.I):
+                        if re.search(r'rel\s*=\s*["\']?[^"\'>]*icon', link_tag, re.I):
+                            href_m = re.search(r'href\s*=\s*["\']([^"\']+)["\']', link_tag, re.I)
+                            if not href_m:
+                                href_m = re.search(r'href\s*=\s*([^\s>]+)', link_tag, re.I)
+                            if href_m:
+                                icon_href = href_m.group(1).strip()
+                                break
+
+                    if icon_href:
+                        final_icon_url = urllib.parse.urljoin(r.url, icon_href)
+                    else:
+                        final_icon_url = urllib.parse.urljoin(r.url, "/favicon.ico")
+
+                    r_ico = requests.get(final_icon_url, headers=req_headers, timeout=10, verify=False)
+                    if r_ico.status_code == 200 and r_ico.content and "<html" not in r_ico.text[:200].lower():
+                        icon_bytes = r_ico.content
+
+                if not icon_bytes:
+                    self.log(f"未能从 {target_url} 获取到有效的图标文件 (尝试路径: {final_icon_url})")
+                    return
+
+                mmh3_val, md5_val = calc_fofa_icon_hash(icon_bytes)
+                query_syntax = f'icon_hash="{mmh3_val}"'
+
+                def _update_ui():
+                    self.entry_fofa_query.delete(0, tk.END)
+                    self.entry_fofa_query.insert(0, query_syntax)
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(query_syntax)
+                    self.log(f"远程图标抓取计算完成 [{final_icon_url}] -> {query_syntax} | MD5: {md5_val} (已填入查询语法并复制)")
+
+                self.root.after(0, _update_ui)
+            except Exception as e:
+                self.log(f"远程图标抓取失败: {str(e)}")
+            finally:
+                self.root.after(0, lambda: self.btn_calc_icon.config(state="normal", text="提取Hash填入"))
+
+        threading.Thread(target=_fetch_icon_task, daemon=True).start()
 
     def open_txt_from_entry(self, entry_widget):
         path = entry_widget.get().strip()
@@ -987,103 +1177,116 @@ class LinkOpenerApp:
         self.log("已触发优雅停止指令！程序将在正在跑的资产检索完毕后安全退出...")
 
     def setup_check_tab(self):
-        c = tk.Frame(self.tab_check, bg=Y2K_BG, padx=12, pady=6)
+        c = tk.Frame(self.tab_check, bg=Y2K_BG, padx=10, pady=6)
         c.pack(fill=tk.BOTH, expand=True)
 
-        r1 = tk.Frame(c, bg=Y2K_BG); r1.pack(fill=tk.X, pady=2)
-        tk.Button(r1, text="粘贴剪贴板链接", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, command=self.paste_links).pack(side=tk.LEFT, padx=4)
-        tk.Button(r1, text="动态去重(链接)", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, command=self.remove_duplicates).pack(side=tk.LEFT, padx=4)
-        tk.Button(r1, text="反选所有复选框", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, command=self.invert_selection).pack(side=tk.LEFT, padx=4)
+        # ==================== 第一区：表格控制与列筛选面板 ====================
+        panel_ops = tk.LabelFrame(c, text=" 表格快捷控制与列筛选 ", bg=Y2K_BG, fg=Y2K_NAVY, font=Y2K_FONT_BOLD, bd=2, relief=tk.GROOVE, padx=6, pady=4)
+        panel_ops.pack(fill=tk.X, pady=(0, 5))
 
-        r_mark = tk.Frame(c, bg=Y2K_BG); r_mark.pack(fill=tk.X, pady=4)
-        tk.Label(r_mark, text="目标列号(1-9):", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_NAVY).pack(side=tk.LEFT)
-        self.entry_col_index = tk.Entry(r_mark, width=4, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
-        self.entry_col_index.insert(0, "5")
-        self.entry_col_index.pack(side=tk.LEFT, padx=5, ipady=1)
-        
-        tk.Label(r_mark, text="包含关键词:", bg=Y2K_BG, font=Y2K_FONT).pack(side=tk.LEFT, padx=(10, 2))
-        self.entry_mark_keyword = tk.Entry(r_mark, width=15, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
-        self.entry_mark_keyword.pack(side=tk.LEFT, padx=5, ipady=1)
-        
-        tk.Button(r_mark, text="标记包含项", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, command=self.mark_contains).pack(side=tk.LEFT, padx=4)
-        tk.Button(r_mark, text="目标列全部查重", bg=Y2K_FACE, fg=Y2K_MAROON, bd=2, relief=tk.RAISED, font=Y2K_FONT_BOLD, padx=8, command=self.mark_duplicates).pack(side=tk.LEFT, padx=4)
-        tk.Button(r_mark, text="目标列全部复制", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, command=self.copy_column_all).pack(side=tk.LEFT, padx=4)
+        # 第 1 行：快捷按钮组（左） + 序号范围动态勾选（右）
+        row_quick = tk.Frame(panel_ops, bg=Y2K_BG)
+        row_quick.pack(fill=tk.X, pady=2)
 
-        r_range = tk.Frame(c, bg=Y2K_BG); r_range.pack(fill=tk.X, pady=4)
-        tk.Label(r_range, text="操作范围(序号):", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT)
-        self.entry_range_start = tk.Entry(r_range, width=6, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        q_btn_opt = {"bg": Y2K_FACE, "fg": "#000000", "bd": 2, "relief": tk.RAISED, "font": Y2K_FONT, "width": 14, "cursor": "hand2"}
+        tk.Button(row_quick, text="粘贴剪贴板链接", **q_btn_opt, command=self.paste_links).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(row_quick, text="动态去重(链接)", **q_btn_opt, command=self.remove_duplicates).pack(side=tk.LEFT, padx=4)
+        tk.Button(row_quick, text="反选所有复选框", **q_btn_opt, command=self.invert_selection).pack(side=tk.LEFT, padx=4)
+        tk.Button(row_quick, text="浏览器打开勾选", bg=Y2K_FACE, fg=Y2K_NAVY, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, width=15, cursor="hand2", command=self.open_checked_links).pack(side=tk.LEFT, padx=4)
+
+        f_range = tk.Frame(row_quick, bg=Y2K_BG)
+        f_range.pack(side=tk.RIGHT, padx=2)
+        tk.Label(f_range, text="序号范围:", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT)
+        self.entry_range_start = tk.Entry(f_range, width=5, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_range_start.insert(0, "1")
-        self.entry_range_start.pack(side=tk.LEFT, padx=5, ipady=1)
-        tk.Label(r_range, text="到", bg=Y2K_BG, font=Y2K_FONT).pack(side=tk.LEFT)
-        self.entry_range_end = tk.Entry(r_range, width=6, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        self.entry_range_start.pack(side=tk.LEFT, padx=3, ipady=1)
+        tk.Label(f_range, text="~", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT)
+        self.entry_range_end = tk.Entry(f_range, width=5, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_range_end.insert(0, "0")
-        self.entry_range_end.pack(side=tk.LEFT, padx=5, ipady=1)
-        
+        self.entry_range_end.pack(side=tk.LEFT, padx=3, ipady=1)
         self.entry_range_start.bind("<KeyRelease>", self.dynamic_check_range)
         self.entry_range_end.bind("<KeyRelease>", self.dynamic_check_range)
-        tk.Label(r_range, text="*(输入数字动态勾选)", font=Y2K_FONT, fg="#404040", bg=Y2K_BG).pack(side=tk.LEFT, padx=(5, 10))
-        
-        tk.Button(r_range, text="默认浏览器打开所选链接", bg=Y2K_FACE, fg=Y2K_NAVY, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=10, command=self.open_checked_links).pack(side=tk.LEFT, padx=5)
+        tk.Label(f_range, text="(动态勾选)", font=Y2K_FONT, fg="#404040", bg=Y2K_BG).pack(side=tk.LEFT, padx=(2, 0))
 
-        r2 = tk.Frame(c, bg=Y2K_BG); r2.pack(fill=tk.X, pady=4)
-        tk.Label(r2, text="并发线程:", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT)
-        self.entry_threads = tk.Entry(r2, width=5, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        # 第 2 行：目标列号/关键词输入（左） + 列处理按钮组（右）
+        row_col = tk.Frame(panel_ops, bg=Y2K_BG)
+        row_col.pack(fill=tk.X, pady=(4, 2))
+
+        tk.Label(row_col, text="目标列(1-9):", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_NAVY).pack(side=tk.LEFT)
+        self.entry_col_index = tk.Entry(row_col, width=4, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        self.entry_col_index.insert(0, "5")
+        self.entry_col_index.pack(side=tk.LEFT, padx=(4, 10), ipady=1)
+
+        tk.Label(row_col, text="包含关键词:", bg=Y2K_BG, font=Y2K_FONT).pack(side=tk.LEFT)
+        self.entry_mark_keyword = tk.Entry(row_col, width=18, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        self.entry_mark_keyword.pack(side=tk.LEFT, padx=(4, 10), ipady=1)
+
+        c_btn_opt = {"bd": 2, "relief": tk.RAISED, "width": 14, "cursor": "hand2"}
+        tk.Button(row_col, text="标记包含项", bg=Y2K_FACE, fg="#000000", font=Y2K_FONT, **c_btn_opt, command=self.mark_contains).pack(side=tk.LEFT, padx=4)
+        tk.Button(row_col, text="目标列全部查重", bg=Y2K_FACE, fg=Y2K_MAROON, font=Y2K_FONT_BOLD, **c_btn_opt, command=self.mark_duplicates).pack(side=tk.LEFT, padx=4)
+        tk.Button(row_col, text="目标列全部复制", bg=Y2K_FACE, fg="#000000", font=Y2K_FONT, **c_btn_opt, command=self.copy_column_all).pack(side=tk.LEFT, padx=4)
+
+        # ==================== 第二区：极速测活控制栏 ====================
+        panel_probe = tk.Frame(c, bg=Y2K_BG, bd=2, relief=tk.GROOVE, padx=8, pady=5)
+        panel_probe.pack(fill=tk.X, pady=(0, 5))
+
+        tk.Label(panel_probe, text="并发线程:", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT)
+        self.entry_threads = tk.Entry(panel_probe, width=5, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_threads.insert(0, self.config_data.get("threads", "200"))
-        self.entry_threads.pack(side=tk.LEFT, padx=5, ipady=1)
-        
-        tk.Label(r2, text="超时(秒):", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT, padx=(10, 0))
-        self.entry_timeout = tk.Entry(r2, width=5, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        self.entry_threads.pack(side=tk.LEFT, padx=(4, 12), ipady=1)
+
+        tk.Label(panel_probe, text="超时(秒):", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT)
+        self.entry_timeout = tk.Entry(panel_probe, width=5, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_timeout.insert(0, self.config_data.get("timeout", "3"))
-        self.entry_timeout.pack(side=tk.LEFT, padx=5, ipady=1)
+        self.entry_timeout.pack(side=tk.LEFT, padx=(4, 12), ipady=1)
 
-        tk.Label(r2, text="存活状态码:", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT, padx=(10, 0))
-        self.entry_status = tk.Entry(r2, width=5, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        tk.Label(panel_probe, text="存活状态码:", bg=Y2K_BG, font=Y2K_FONT_BOLD).pack(side=tk.LEFT)
+        self.entry_status = tk.Entry(panel_probe, width=6, justify="center", bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_status.insert(0, self.config_data.get("status_code", "200"))
-        self.entry_status.pack(side=tk.LEFT, padx=5, ipady=1)
-        
-        self.btn_check = tk.Button(r2, text="对【已勾选】资产极速测活", bg=Y2K_GREEN, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=14, command=self.start_health_check)
-        self.btn_check.pack(side=tk.LEFT, padx=12)
-        self.btn_pause = tk.Button(r2, text="暂停", bg=Y2K_FACE, fg=Y2K_DARK, disabledforeground=Y2K_DARK, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=10, state="disabled", command=self.pause_health_check)
-        self.btn_pause.pack(side=tk.LEFT, padx=4)
-        self.btn_stop = tk.Button(r2, text="停止", bg=Y2K_FACE, fg=Y2K_DARK, disabledforeground=Y2K_DARK, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=10, state="disabled", command=self.stop_health_check)
-        self.btn_stop.pack(side=tk.LEFT, padx=4)
+        self.entry_status.pack(side=tk.LEFT, padx=(4, 12), ipady=1)
 
-        path_frame = tk.Frame(c, bg=Y2K_BG)
-        path_frame.pack(fill=tk.X, pady=6)
+        f_probe_btns = tk.Frame(panel_probe, bg=Y2K_BG)
+        f_probe_btns.pack(side=tk.RIGHT)
+        self.btn_check = tk.Button(f_probe_btns, text="▶ 对【已勾选】资产极速测活", bg=Y2K_GREEN, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=14, cursor="hand2", command=self.start_health_check)
+        self.btn_check.pack(side=tk.LEFT, padx=(0, 6))
+        self.btn_pause = tk.Button(f_probe_btns, text="暂停", bg=Y2K_FACE, fg=Y2K_DARK, disabledforeground=Y2K_DARK, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, width=7, state="disabled", command=self.pause_health_check)
+        self.btn_pause.pack(side=tk.LEFT, padx=3)
+        self.btn_stop = tk.Button(f_probe_btns, text="停止", bg=Y2K_FACE, fg=Y2K_DARK, disabledforeground=Y2K_DARK, font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, width=7, state="disabled", command=self.stop_health_check)
+        self.btn_stop.pack(side=tk.LEFT, padx=(3, 0))
 
-        f_imp = tk.Frame(path_frame, bg=Y2K_BG)
-        f_imp.pack(fill=tk.X, pady=2)
-        lbl_imp = tk.Label(f_imp, text="直连资产txt路径:", bg=Y2K_FACE, fg="#000000", bd=1, relief=tk.GROOVE, font=Y2K_FONT_BOLD, width=16, anchor="e")
-        lbl_imp.pack(side=tk.LEFT, ipady=2, padx=(0, 5))
-        self.entry_import_path = tk.Entry(f_imp, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        # ==================== 第三区：资产导入导出与自动化网格 ====================
+        panel_io = tk.Frame(c, bg=Y2K_BG, bd=2, relief=tk.GROOVE, padx=6, pady=5)
+        panel_io.pack(fill=tk.X)
+        panel_io.columnconfigure(1, weight=1)
+
+        # Row 0: 直连资产导入
+        tk.Label(panel_io, text="直连资产txt路径:", bg=Y2K_FACE, fg="#000000", bd=1, relief=tk.GROOVE, font=Y2K_FONT_BOLD, width=15, anchor="e").grid(row=0, column=0, sticky="w", padx=(0, 5), pady=2, ipady=2)
+        self.entry_import_path = tk.Entry(panel_io, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_import_path.insert(0, self.config_data.get("import_path", ""))
-        self.entry_import_path.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
-        tk.Button(f_imp, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=self.select_import_file).pack(side=tk.LEFT, padx=(5, 0))
-        tk.Button(f_imp, text="导入为直连资产", bg=Y2K_PURPLE, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=10, command=self.import_txt_data).pack(side=tk.LEFT, padx=(5, 0))
+        self.entry_import_path.grid(row=0, column=1, sticky="ew", pady=2, ipady=2)
+        tk.Button(panel_io, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, width=7, cursor="hand2", command=self.select_import_file).grid(row=0, column=2, padx=5, pady=2)
+        tk.Button(panel_io, text="导入为直连资产", bg=Y2K_PURPLE, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, width=16, cursor="hand2", command=self.import_txt_data).grid(row=0, column=3, pady=2)
         self.enable_drag_drop(self.entry_import_path, 'txt')
-        
-        f_exp = tk.Frame(path_frame, bg=Y2K_BG)
-        f_exp.pack(fill=tk.X, pady=2)
-        lbl_exp = tk.Label(f_exp, text="导出资产文件夹:", bg=Y2K_FACE, fg="#000000", bd=1, relief=tk.GROOVE, font=Y2K_FONT_BOLD, width=16, anchor="e")
-        lbl_exp.pack(side=tk.LEFT, ipady=2, padx=(0, 5))
-        self.entry_export_dir = tk.Entry(f_exp, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+
+        # Row 1: 导出文件夹
+        tk.Label(panel_io, text="导出资产文件夹:", bg=Y2K_FACE, fg="#000000", bd=1, relief=tk.GROOVE, font=Y2K_FONT_BOLD, width=15, anchor="e").grid(row=1, column=0, sticky="w", padx=(0, 5), pady=2, ipady=2)
+        self.entry_export_dir = tk.Entry(panel_io, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_export_dir.insert(0, self.config_data.get("export_dir", ""))
-        self.entry_export_dir.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
-        tk.Button(f_exp, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=10, command=self.select_export_dir).pack(side=tk.LEFT, padx=(5, 0))
-        tk.Button(f_exp, text="一键导出", bg=Y2K_NAVY, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, padx=10, command=self.export_txt_data).pack(side=tk.LEFT, padx=(5, 0))
+        self.entry_export_dir.grid(row=1, column=1, sticky="ew", pady=2, ipady=2)
+        tk.Button(panel_io, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, width=7, cursor="hand2", command=self.select_export_dir).grid(row=1, column=2, padx=5, pady=2)
+        tk.Button(panel_io, text="一键导出资产", bg=Y2K_NAVY, fg="#FFFFFF", font=Y2K_FONT_BOLD, bd=2, relief=tk.RAISED, width=16, cursor="hand2", command=self.export_txt_data).grid(row=1, column=3, pady=2)
         self.enable_drag_drop(self.entry_export_dir, 'dir')
 
-        r4 = tk.Frame(c, bg=Y2K_BG); r4.pack(fill=tk.X, pady=4)
-        tk.Label(r4, text="完成提示音(WAV):", bg=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_NAVY).pack(side=tk.LEFT)
-        self.entry_sound_path = tk.Entry(r4, width=30, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
+        # Row 2: 完成提示音与自动关机
+        tk.Label(panel_io, text="完成提示音(WAV):", bg=Y2K_FACE, fg=Y2K_NAVY, bd=1, relief=tk.GROOVE, font=Y2K_FONT_BOLD, width=15, anchor="e").grid(row=2, column=0, sticky="w", padx=(0, 5), pady=2, ipady=2)
+        self.entry_sound_path = tk.Entry(panel_io, bg="#FFFFFF", fg="#000000", bd=2, relief=tk.SUNKEN, font=Y2K_FONT)
         self.entry_sound_path.insert(0, self.config_data.get("sound_path", ""))
-        self.entry_sound_path.pack(side=tk.LEFT, padx=5, ipady=1)
-        tk.Button(r4, text="浏览音频", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, padx=8, command=self.select_sound).pack(side=tk.LEFT)
-        tk.Label(r4, text="(留空默认'叮'声)", bg=Y2K_BG, font=Y2K_FONT, fg="#404040").pack(side=tk.LEFT, padx=5)
+        self.entry_sound_path.grid(row=2, column=1, sticky="ew", pady=2, ipady=2)
+        tk.Button(panel_io, text="浏览", bg=Y2K_FACE, fg="#000000", bd=2, relief=tk.RAISED, font=Y2K_FONT, width=7, cursor="hand2", command=self.select_sound).grid(row=2, column=2, padx=5, pady=2)
         self.enable_drag_drop(self.entry_sound_path, 'wav')
 
         self.var_auto_shutdown = tk.BooleanVar(value=False)
-        tk.Checkbutton(r4, text="测试完成后自动保存并关机", variable=self.var_auto_shutdown, bg=Y2K_BG, activebackground=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_MAROON).pack(side=tk.RIGHT, padx=5)
+        tk.Checkbutton(panel_io, text="完成后保存并关机", variable=self.var_auto_shutdown, bg=Y2K_BG, activebackground=Y2K_BG, font=Y2K_FONT_BOLD, fg=Y2K_MAROON, anchor="w").grid(row=2, column=3, sticky="w", pady=2)
         
     def log(self, msg):
         t = time.strftime("%H:%M:%S")
@@ -1138,6 +1341,7 @@ class LinkOpenerApp:
         self.config_data["fofa_key"] = self.entry_fofa_key.get().strip() if hasattr(self, 'entry_fofa_key') else ""
         self.config_data["fofa_query"] = self.entry_fofa_query.get().strip() if hasattr(self, 'entry_fofa_query') else ""
         self.config_data["fofa_size"] = self.entry_fofa_size.get().strip() if hasattr(self, 'entry_fofa_size') else "100"
+        self.config_data["fofa_icon_source"] = self.entry_fofa_icon.get().strip() if hasattr(self, 'entry_fofa_icon') else ""
         self.config_data["import_path"] = self.entry_import_path.get().strip() if hasattr(self, 'entry_import_path') else ""
         self.config_data["export_dir"] = self.entry_export_dir.get().strip() if hasattr(self, 'entry_export_dir') else ""
         self.config_data["sound_path"] = self.entry_sound_path.get().strip() if hasattr(self, 'entry_sound_path') else ""
@@ -2051,7 +2255,7 @@ class LinkOpenerApp:
                     executor.submit(_proc)
             
             self.root.after(0, self.reindex_table)
-            self.root.after(0, lambda: self.btn_check.config(state="normal", text="对【已勾选】资产极速测活"))
+            self.root.after(0, lambda: self.btn_check.config(state="normal", text="▶ 对【已勾选】资产极速测活"))
             self.root.after(0, lambda: self.btn_pause.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK, text="暂停"))
             self.root.after(0, lambda: self.btn_stop.config(state="disabled", bg=Y2K_FACE, fg=Y2K_DARK))
             
